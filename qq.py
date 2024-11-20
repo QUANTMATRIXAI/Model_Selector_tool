@@ -132,7 +132,7 @@ if uploaded_file:
     # Identify columns
     numerical_columns = dataframe.select_dtypes(include=np.number).columns.tolist()
     categorical_columns = dataframe.select_dtypes(include=['object', 'category']).columns.tolist()
- 
+    
     # Layout for Visualization and Saved Charts
     col1, col2, col3 = st.columns([1, 3, 1])
  
@@ -253,6 +253,158 @@ with st.sidebar.expander("📊 Visualization Options", expanded=True):
                     st.warning("Please select chart type and variables to generate a chart.")
 
 
+# # **Trendline Options**
+# with st.sidebar.expander("📈 Time-Based Trendline", expanded=True):
+#     st.header("Trendline Analysis")
+
+#     # Select Y-axis Columns
+#     time_based_y_axis = st.multiselect(
+#         "Select Y-axis for Trendline",
+#         options=numerical_columns,
+#         key="trend_y_axis"
+#     )
+
+#     # Select Time Column
+#     time_column = st.selectbox(
+#         "Time Column (e.g., Year, Month, Week, Date)",
+#         options=["Year", "Month", "Week", "Date"],
+#         key="time_column"
+#     )
+
+#     # Select Aggregation Type
+#     aggregation_type = st.selectbox(
+#         "Aggregation Type (applied to all selected Y-axis metrics)",
+#         ["Sum", "Mean", "Min", "Max", "Count", "Median"],
+#         key="aggregation_type"
+#     )
+
+#     # Appreciation/Depreciation Detection
+#     enable_app_depr = st.checkbox("Enable Appreciation/Depreciation Detection", key="enable_app_depr")
+#     if enable_app_depr:
+#         app_depr_threshold = st.number_input(
+#             "Enter Percentage Threshold for Appreciation/Depreciation (e.g., 50 for 50%)",
+#             value=50,
+#             min_value=1,
+#             max_value=100,
+#             key="app_depr_threshold"
+#         )
+
+#     # Annotations
+#     enable_annotations = st.checkbox(
+#         "Enable Annotations (Min/Max Values)",
+#         value=False,
+#         key="enable_annotations"
+#     )
+
+#     if time_based_y_axis and time_column:
+#         trend_data = filtered_data if slicer_active else dataframe.copy()
+
+#         # Ensure Time Column is present or handle gracefully
+#         if time_column not in trend_data.columns and time_column != "Date":
+#             st.error(f"Selected time column '{time_column}' is not present in the dataset.")
+#         else:
+#             # Process Time Column
+#             if time_column == "Year":
+#                 trend_data["Time"] = pd.to_datetime(trend_data["Year"], format='%Y')
+#             elif time_column == "Month":
+#                 trend_data["Time"] = pd.to_datetime(
+#                     trend_data["Year"].astype(str) + '-' + trend_data["Month"].astype(str),
+#                     format='%Y-%m'
+#                 )
+#             elif time_column == "Week":
+#                 trend_data["Time"] = pd.to_datetime(
+#                     trend_data["Year"].astype(str) + trend_data["Week"].astype(str) + '1',
+#                     format='%Y%U%w'
+#                 )
+#             else:  # Assume "Date" column
+#                 trend_data["Time"] = pd.to_datetime(trend_data[time_column], errors="coerce")
+#                 trend_data = trend_data.dropna(subset=["Time"])  # Drop rows with invalid dates
+
+#             # Aggregate Data
+#             trend_agg = trend_data.groupby("Time")[time_based_y_axis].agg(aggregation_type.lower()).reset_index()
+
+#             # Detect Appreciation/Depreciation
+#             app_depr_annotations = []
+#             if enable_app_depr:
+#                 for metric in time_based_y_axis:
+#                     trend_agg[f"{metric}_change"] = trend_agg[metric].pct_change() * 100
+#                     for i in range(1, len(trend_agg)):
+#                         change = trend_agg.loc[i, f"{metric}_change"]
+#                         if change >= app_depr_threshold:
+#                             app_depr_annotations.append({
+#                                 "time": trend_agg.loc[i, "Time"],
+#                                 "value": trend_agg.loc[i, metric],
+#                                 "type": "Appreciation",
+#                                 "change": change
+#                             })
+#                         elif change <= -app_depr_threshold:
+#                             app_depr_annotations.append({
+#                                 "time": trend_agg.loc[i, "Time"],
+#                                 "value": trend_agg.loc[i, metric],
+#                                 "type": "Depreciation",
+#                                 "change": change
+#                             })
+
+#             # Create Trendline Figure
+#             trendline_fig = px.line(
+#                 trend_agg,
+#                 x="Time",
+#                 y=time_based_y_axis,
+#                 title=f"Trendline of {', '.join(time_based_y_axis)} Over {time_column}",
+#                 markers=True
+#             )
+
+#             # Add Annotations for Min/Max
+#             if enable_annotations:
+#                 for metric in time_based_y_axis:
+#                     # Highlight Max Value
+#                     max_point = trend_agg[metric].max()
+#                     max_time = trend_agg.loc[trend_agg[metric].idxmax(), "Time"]
+#                     trendline_fig.add_annotation(
+#                         x=max_time,
+#                         y=max_point,
+#                         text=f"Max: {max_point}",
+#                         showarrow=True,
+#                         arrowhead=2,
+#                         ax=0,
+#                         ay=-30,
+#                         bgcolor="antiquewhite"
+#                     )
+
+#                     # Highlight Min Value
+#                     min_point = trend_agg[metric].min()
+#                     min_time = trend_agg.loc[trend_agg[metric].idxmin(), "Time"]
+#                     trendline_fig.add_annotation(
+#                         x=min_time,
+#                         y=min_point,
+#                         text=f"Min: {min_point}",
+#                         showarrow=True,
+#                         arrowhead=2,
+#                         ax=0,
+#                         ay=30,
+#                         bgcolor="yellow"
+#                     )
+
+#             # Add Annotations for Appreciation/Depreciation
+#             if enable_app_depr:
+#                 for annotation in app_depr_annotations:
+#                     trendline_fig.add_annotation(
+#                         x=annotation["time"],
+#                         y=annotation["value"],
+#                         text=f"{annotation['type']}: {annotation['change']:.2f}%",
+#                         showarrow=True,
+#                         arrowhead=2,
+#                         ax=0,
+#                         ay=40 if annotation["type"] == "Appreciation" else -40,
+#                         bgcolor="lightblue" if annotation["type"] == "Appreciation" else "orange"
+#                     )
+
+#             # Display Trendline in Main Area
+#             with col2:
+#                 st.plotly_chart(trendline_fig, use_container_width=True, key="trendline_chart")
+
+import calendar
+
 # **Trendline Options**
 with st.sidebar.expander("📈 Time-Based Trendline", expanded=True):
     st.header("Trendline Analysis")
@@ -283,7 +435,7 @@ with st.sidebar.expander("📈 Time-Based Trendline", expanded=True):
     if enable_app_depr:
         app_depr_threshold = st.number_input(
             "Enter Percentage Threshold for Appreciation/Depreciation (e.g., 50 for 50%)",
-            value=50,
+            value=30,
             min_value=1,
             max_value=100,
             key="app_depr_threshold"
@@ -306,16 +458,26 @@ with st.sidebar.expander("📈 Time-Based Trendline", expanded=True):
             # Process Time Column
             if time_column == "Year":
                 trend_data["Time"] = pd.to_datetime(trend_data["Year"], format='%Y')
+
             elif time_column == "Month":
+                # Handle text-based months (e.g., "January", "Feb")
+                if trend_data["Month"].dtype == 'object':
+                    month_mapping = {name: num for num, name in enumerate(calendar.month_name) if name}
+                    month_mapping.update({name: num for num, name in enumerate(calendar.month_abbr) if name})
+                    trend_data["Month"] = trend_data["Month"].map(month_mapping)
+
+                # Combine Year and Month
                 trend_data["Time"] = pd.to_datetime(
                     trend_data["Year"].astype(str) + '-' + trend_data["Month"].astype(str),
-                    format='%Y-%m'
+                    format='%Y-%m', errors="coerce"
                 )
+
             elif time_column == "Week":
                 trend_data["Time"] = pd.to_datetime(
                     trend_data["Year"].astype(str) + trend_data["Week"].astype(str) + '1',
                     format='%Y%U%w'
                 )
+
             else:  # Assume "Date" column
                 trend_data["Time"] = pd.to_datetime(trend_data[time_column], errors="coerce")
                 trend_data = trend_data.dropna(subset=["Time"])  # Drop rows with invalid dates
@@ -368,7 +530,8 @@ with st.sidebar.expander("📈 Time-Based Trendline", expanded=True):
                         arrowhead=2,
                         ax=0,
                         ay=-30,
-                        bgcolor="antiquewhite"
+                        bgcolor="lightgreen",
+                        font=dict(color="black", weight="bold")
                     )
 
                     # Highlight Min Value
@@ -382,9 +545,9 @@ with st.sidebar.expander("📈 Time-Based Trendline", expanded=True):
                         arrowhead=2,
                         ax=0,
                         ay=30,
-                        bgcolor="yellow"
+                        bgcolor="lightcoral",
+                        font=dict(color="black", weight="bold")
                     )
-
             # Add Annotations for Appreciation/Depreciation
             if enable_app_depr:
                 for annotation in app_depr_annotations:
@@ -398,10 +561,16 @@ with st.sidebar.expander("📈 Time-Based Trendline", expanded=True):
                         ay=40 if annotation["type"] == "Appreciation" else -40,
                         bgcolor="lightblue" if annotation["type"] == "Appreciation" else "orange"
                     )
+            # Display Appreciation/Depreciation Results in Table Below the Graph
+            if enable_app_depr and app_depr_annotations:
+                st.subheader("Appreciation/Depreciation Details")
+                app_depr_df = pd.DataFrame(app_depr_annotations)
+                st.dataframe(app_depr_df)
 
             # Display Trendline in Main Area
             with col2:
                 st.plotly_chart(trendline_fig, use_container_width=True, key="trendline_chart")
+
 
 
         # Market Share Analysis Section
@@ -1142,81 +1311,5 @@ with st.sidebar.expander("🌀 Clustering Analysis", expanded=True):
             else:
                 st.warning("Please select at least two features for clustering.")
 
-        # Time Series Analysis in Sidebar
-with st.sidebar.expander("⏳ Time Series Analysis", expanded=True):
-    st.header("⏳ Time Series Analysis")
 
-    # Enable/Disable Analysis
-    enable_time_series = st.checkbox("Enable Time Series Analysis", key="enable_time_series")
-
-    if enable_time_series:
-        st.subheader("Time Series Configuration")
-
-        # Select time and value columns
-        time_column = st.selectbox(
-            "Select Time Column (e.g., Date):",
-            options=dataframe.columns,
-            key="time_series_time_column"
-        )
-        value_column = st.selectbox(
-            "Select Value Column (e.g., Sales):",
-            options=numerical_columns,
-            key="time_series_value_column"
-        )
-
-        # Aggregation type selection
-        aggregation_type = st.selectbox(
-            "Select Aggregation Type:",
-            ["Sum", "Mean"],
-            key="time_series_aggregation_type"
-        )
-
-        # Date conversion option
-        convert_to_datetime = st.checkbox("Convert Time Column to Datetime", key="convert_to_datetime")
-
-        # Frequency selection
-        frequency = st.selectbox(
-            "Select Resampling Frequency:",
-            ["Daily", "Weekly", "Monthly", "Yearly"],
-            key="time_series_frequency"
-        )
-
-        # Results in Center Column
-        with col2:
-            st.header("Time Series Results")
-
-            if time_column and value_column:
-                try:
-                    # Convert time column to datetime if required
-                    if convert_to_datetime:
-                        dataframe[time_column] = pd.to_datetime(dataframe[time_column], errors="coerce")
-                        dataframe.dropna(subset=[time_column], inplace=True)
-
-                    # Resample data based on frequency
-                    freq_map = {"Daily": "D", "Weekly": "W", "Monthly": "M", "Yearly": "Y"}
-                    resampled_data = dataframe.set_index(time_column).resample(freq_map[frequency])[value_column].agg(aggregation_type.lower())
-
-                    # Display resampled data
-                    st.subheader("Resampled Data Preview")
-                    st.dataframe(resampled_data.reset_index())
-
-                    # Time series plot
-                    st.subheader(f"Time Series: {value_column} Over {frequency}")
-                    fig_time_series = px.line(
-                        resampled_data,
-                        x=resampled_data.index,
-                        y=resampled_data.values,
-                        title=f"{value_column} ({aggregation_type}) Over {frequency}",
-                        labels={"x": time_column, "y": value_column},
-                        template="plotly_white"
-                    )
-                    fig_time_series.update_layout(xaxis_title=time_column, yaxis_title=value_column)
-                    st.plotly_chart(fig_time_series, use_container_width=True)
-
-                    
-
-                except Exception as e:
-                    st.error(f"Error in time series analysis: {e}")
-            else:
-                st.warning("Please select both a time column and a value column.")
 
