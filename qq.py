@@ -205,60 +205,204 @@ with st.sidebar.expander("📊 Visualization Options", expanded=True):
         threshold = st.number_input("Value Threshold", value=0, help="Display only values above this threshold in the chart.")
         custom_title = st.text_input("Custom Chart Title", value="")
 
+        # Additional Option for Stacked Bar Chart
+        stacked_by = st.selectbox(
+            "Stacked By (Select a categorical column for stacking, applicable for Bar Chart)",
+            options=categorical_columns,
+            key="stacked_by"
+        ) if chart_type == "Bar" else None
+
         # Apply Slicer Filters if Enabled
         data_to_plot = filtered_data if slicer_active else dataframe
         data_to_plot = data_to_plot if threshold == 0 else data_to_plot[data_to_plot[y_axis] > threshold]
 
-        # Generate Charts Based on Selected Type
-        fig = None
-        if chart_type == "Bar":
-            fig = px.bar(data_to_plot, x=x_axis, y=y_axis, title=custom_title or f"{y_axis} vs {x_axis} - Bar Chart")
-        elif chart_type == "Scatter":
-            fig = px.scatter(data_to_plot, x=x_axis, y=y_axis, title=custom_title or f"{y_axis} vs {x_axis} - Scatter Plot")
-        elif chart_type == "Pie":
-            fig = px.pie(data_to_plot, names=x_axis, values=y_axis, title=custom_title or f"{y_axis} Distribution by {x_axis}")
-        elif chart_type == "Histogram":
-            fig = px.histogram(data_to_plot, x=x_axis, title=custom_title or f"{x_axis} Histogram")
+        # Add a button to trigger visualization
+        generate_chart = st.button("Generate Chart")
 
-        # Display Chart
-        with col2:
-            if fig:
-                st.plotly_chart(fig, use_container_width=True, key=f"main_viz_chart_{chart_type}")
-            else:
-                st.warning("Please select chart type and variables to generate a chart.")
+        # Generate Charts Based on Selected Type
+        if generate_chart:  # Chart is generated only when the button is clicked
+            fig = None
+            if chart_type == "Bar":
+                fig = px.bar(
+                    data_to_plot,
+                    x=x_axis,
+                    y=y_axis,
+                    color=stacked_by,  # Stack by the selected categorical column
+                    title=custom_title or f"{y_axis} by {x_axis} (Stacked by {stacked_by})",
+                    barmode="stack"
+                )
+            elif chart_type == "Scatter":
+                fig = px.scatter(data_to_plot, x=x_axis, y=y_axis, title=custom_title or f"{y_axis} vs {x_axis} - Scatter Plot")
+            elif chart_type == "Pie":
+                fig = px.pie(data_to_plot, names=x_axis, values=y_axis, title=custom_title or f"{y_axis} Distribution by {x_axis}")
+            elif chart_type == "Histogram":
+                fig = px.histogram(
+                    data_to_plot,
+                    x=x_axis,
+                    y=y_axis if stacked_by else None,
+                    color=stacked_by,  # Stack by the selected categorical column
+                    title=custom_title or f"{x_axis} Histogram",
+                    barmode="stack" if stacked_by else "overlay"
+                )
+
+            # Display Chart
+            with col2:
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True, key=f"main_viz_chart_{chart_type}")
+                else:
+                    st.warning("Please select chart type and variables to generate a chart.")
 
 
 # **Trendline Options**
 with st.sidebar.expander("📈 Time-Based Trendline", expanded=True):
     st.header("Trendline Analysis")
-    time_based_y_axis = st.multiselect("Select Y-axis for Trendline", options=numerical_columns, key="trend_y_axis")
-    time_column = st.selectbox("Time Column (e.g., Year, Month, Week)", options=["Year", "Month", "Week", "Date"], key="time_column")
-    aggregation_type = st.selectbox("Aggregation Type", ["Sum", "Mean"], key="aggregation_type")
+
+    # Select Y-axis Columns
+    time_based_y_axis = st.multiselect(
+        "Select Y-axis for Trendline",
+        options=numerical_columns,
+        key="trend_y_axis"
+    )
+
+    # Select Time Column
+    time_column = st.selectbox(
+        "Time Column (e.g., Year, Month, Week, Date)",
+        options=["Year", "Month", "Week", "Date"],
+        key="time_column"
+    )
+
+    # Select Aggregation Type
+    aggregation_type = st.selectbox(
+        "Aggregation Type (applied to all selected Y-axis metrics)",
+        ["Sum", "Mean", "Min", "Max", "Count", "Median"],
+        key="aggregation_type"
+    )
+
+    # Appreciation/Depreciation Detection
+    enable_app_depr = st.checkbox("Enable Appreciation/Depreciation Detection", key="enable_app_depr")
+    if enable_app_depr:
+        app_depr_threshold = st.number_input(
+            "Enter Percentage Threshold for Appreciation/Depreciation (e.g., 50 for 50%)",
+            value=50,
+            min_value=1,
+            max_value=100,
+            key="app_depr_threshold"
+        )
+
+    # Annotations
+    enable_annotations = st.checkbox(
+        "Enable Annotations (Min/Max Values)",
+        value=False,
+        key="enable_annotations"
+    )
 
     if time_based_y_axis and time_column:
         trend_data = filtered_data if slicer_active else dataframe.copy()
 
-        if time_column == "Year":
-            trend_data["Time"] = pd.to_datetime(trend_data["Year"], format='%Y')
-        elif time_column == "Month":
-            trend_data["Time"] = pd.to_datetime(trend_data["Year"].astype(str) + '-' + trend_data["Month"].astype(str), format='%Y-%m')
-        elif time_column == "Week":
-            trend_data["Time"] = pd.to_datetime(trend_data["Year"].astype(str) + trend_data["Week"].astype(str) + '1', format='%Y%U%w')
+        # Ensure Time Column is present or handle gracefully
+        if time_column not in trend_data.columns and time_column != "Date":
+            st.error(f"Selected time column '{time_column}' is not present in the dataset.")
         else:
-            trend_data["Time"] = pd.to_datetime(trend_data["Date"])
+            # Process Time Column
+            if time_column == "Year":
+                trend_data["Time"] = pd.to_datetime(trend_data["Year"], format='%Y')
+            elif time_column == "Month":
+                trend_data["Time"] = pd.to_datetime(
+                    trend_data["Year"].astype(str) + '-' + trend_data["Month"].astype(str),
+                    format='%Y-%m'
+                )
+            elif time_column == "Week":
+                trend_data["Time"] = pd.to_datetime(
+                    trend_data["Year"].astype(str) + trend_data["Week"].astype(str) + '1',
+                    format='%Y%U%w'
+                )
+            else:  # Assume "Date" column
+                trend_data["Time"] = pd.to_datetime(trend_data[time_column], errors="coerce")
+                trend_data = trend_data.dropna(subset=["Time"])  # Drop rows with invalid dates
 
-        trend_agg = trend_data.groupby("Time")[time_based_y_axis].agg(aggregation_type.lower()).reset_index()
+            # Aggregate Data
+            trend_agg = trend_data.groupby("Time")[time_based_y_axis].agg(aggregation_type.lower()).reset_index()
 
-        trendline_fig = px.line(
-            trend_agg,
-            x="Time",
-            y=time_based_y_axis,
-            title=f"Trendline of {', '.join(time_based_y_axis)} Over {time_column}",
-            markers=True
-        )
+            # Detect Appreciation/Depreciation
+            app_depr_annotations = []
+            if enable_app_depr:
+                for metric in time_based_y_axis:
+                    trend_agg[f"{metric}_change"] = trend_agg[metric].pct_change() * 100
+                    for i in range(1, len(trend_agg)):
+                        change = trend_agg.loc[i, f"{metric}_change"]
+                        if change >= app_depr_threshold:
+                            app_depr_annotations.append({
+                                "time": trend_agg.loc[i, "Time"],
+                                "value": trend_agg.loc[i, metric],
+                                "type": "Appreciation",
+                                "change": change
+                            })
+                        elif change <= -app_depr_threshold:
+                            app_depr_annotations.append({
+                                "time": trend_agg.loc[i, "Time"],
+                                "value": trend_agg.loc[i, metric],
+                                "type": "Depreciation",
+                                "change": change
+                            })
 
-        with col2:
-            st.plotly_chart(trendline_fig, use_container_width=True, key="trendline_chart")
+            # Create Trendline Figure
+            trendline_fig = px.line(
+                trend_agg,
+                x="Time",
+                y=time_based_y_axis,
+                title=f"Trendline of {', '.join(time_based_y_axis)} Over {time_column}",
+                markers=True
+            )
+
+            # Add Annotations for Min/Max
+            if enable_annotations:
+                for metric in time_based_y_axis:
+                    # Highlight Max Value
+                    max_point = trend_agg[metric].max()
+                    max_time = trend_agg.loc[trend_agg[metric].idxmax(), "Time"]
+                    trendline_fig.add_annotation(
+                        x=max_time,
+                        y=max_point,
+                        text=f"Max: {max_point}",
+                        showarrow=True,
+                        arrowhead=2,
+                        ax=0,
+                        ay=-30,
+                        bgcolor="antiquewhite"
+                    )
+
+                    # Highlight Min Value
+                    min_point = trend_agg[metric].min()
+                    min_time = trend_agg.loc[trend_agg[metric].idxmin(), "Time"]
+                    trendline_fig.add_annotation(
+                        x=min_time,
+                        y=min_point,
+                        text=f"Min: {min_point}",
+                        showarrow=True,
+                        arrowhead=2,
+                        ax=0,
+                        ay=30,
+                        bgcolor="yellow"
+                    )
+
+            # Add Annotations for Appreciation/Depreciation
+            if enable_app_depr:
+                for annotation in app_depr_annotations:
+                    trendline_fig.add_annotation(
+                        x=annotation["time"],
+                        y=annotation["value"],
+                        text=f"{annotation['type']}: {annotation['change']:.2f}%",
+                        showarrow=True,
+                        arrowhead=2,
+                        ax=0,
+                        ay=40 if annotation["type"] == "Appreciation" else -40,
+                        bgcolor="lightblue" if annotation["type"] == "Appreciation" else "orange"
+                    )
+
+            # Display Trendline in Main Area
+            with col2:
+                st.plotly_chart(trendline_fig, use_container_width=True, key="trendline_chart")
+
 
         # Market Share Analysis Section
 with st.sidebar.expander("📊 Market Share Analysis", expanded=True):
