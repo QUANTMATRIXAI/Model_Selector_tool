@@ -1,4 +1,3 @@
-
 import uuid 
 import streamlit as st
 import pandas as pd
@@ -7,7 +6,9 @@ import plotly.express as px
 from scipy.stats import zscore, shapiro
 from io import BytesIO
 from zipfile import ZipFile
- 
+import matplotlib.pyplot as plt
+import seaborn as sns
+
 # Page Configuration
 st.set_page_config(
     page_title="Quant Matrix AI - Enhanced EDA Tool",
@@ -15,7 +16,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
- 
 # Updated CSS Styling with Black Text and Yellow Background
 st.markdown(
     """
@@ -101,7 +101,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
 st.markdown(
     '<div class="main-header"><i class="fas fa-chart-line icon"></i> Quant Matrix AI - Enhanced EDA Tool</div>',
     unsafe_allow_html=True
@@ -113,29 +112,28 @@ if "saved_charts" not in st.session_state:
 if "pinned_chart" not in st.session_state:
     st.session_state.pinned_chart = None
 
+# Layout for Visualization and Saved Charts
+col1, col2, col3 = st.columns([1, 3, 1])  # Ensure columns are always defined
 
 # Sidebar - File Upload
 with st.sidebar:
     st.header("Settings")
     uploaded_file = st.file_uploader("Upload a CSV or Excel file", type=["csv", "xlsx"])
- 
-# If the file is uploaded, load data
+
+# Initialize default values for dataframe and columns
 if uploaded_file:
     # Read data
     if uploaded_file.name.endswith('.csv'):
         dataframe = pd.read_csv(uploaded_file)
     else:
         dataframe = pd.read_excel(uploaded_file)
- 
+
     st.success("File uploaded successfully!")
- 
+
     # Identify columns
     numerical_columns = dataframe.select_dtypes(include=np.number).columns.tolist()
     categorical_columns = dataframe.select_dtypes(include=['object', 'category']).columns.tolist()
-    
-    # Layout for Visualization and Saved Charts
-    col1, col2, col3 = st.columns([1, 3, 1])
- 
+
     # **Pinned Chart Section**
     if st.session_state.pinned_chart:
         with col1:
@@ -144,7 +142,16 @@ if uploaded_file:
             st.write(st.session_state.pinned_chart[0])
             st.plotly_chart(st.session_state.pinned_chart[1], use_container_width=True, key="pinned_chart")
             st.markdown('</div>', unsafe_allow_html=True)
- 
+else:
+    # If no file is uploaded, initialize an empty dataframe and column lists
+    dataframe = pd.DataFrame()
+    numerical_columns = []
+    categorical_columns = []
+
+    st.warning("Please upload a file to proceed.")
+
+# Use `dataframe` as needed in the rest of your application
+
 # **Center Column - Data Slicing Options and Generated Charts**
 with col2:
     st.header("Data Slicing Options")
@@ -153,6 +160,9 @@ with col2:
     if slicer_active:
         slicer_columns = ["Market", "Channel", "Region", "Category", "SubCategory", "Brand", "Variant", "PackType", "PPG", "PackSize", "Year", "Month", "Week"]
         filters = {}
+
+        # Initialize filtered data
+        filtered_data = dataframe.copy()
 
         # Divide slicer columns into two rows for better layout
         row1_cols = slicer_columns[:len(slicer_columns) // 2]
@@ -163,23 +173,46 @@ with col2:
         for idx, col in enumerate(row1_cols):
             if col in dataframe.columns:
                 with row1[idx]:
-                    selected_values = st.multiselect(f"{col}", options=dataframe[col].unique(), key=f"slicer_{col}")
+                    # Dynamically update slicer options based on other slicers
+                    temp_data = filtered_data.copy()
+                    for other_col, selected_values in filters.items():
+                        if other_col != col:
+                            temp_data = temp_data[temp_data[other_col].isin(selected_values)]
+                    
+                    # Ensure sorted display for Week and Month slicers
+                    if col == "Week" or col == "Month":
+                        available_values = sorted(temp_data[col].unique())
+                    else:
+                        available_values = temp_data[col].unique()
+
+                    # Display the slicer with sorted options for Week and Month
+                    selected_values = st.multiselect(f"{col}", options=available_values, key=f"slicer_{col}")
                     if selected_values:
                         filters[col] = selected_values
+                        filtered_data = filtered_data[filtered_data[col].isin(selected_values)]
 
         # Create slicer UI for the second row of columns
         row2 = st.columns(len(row2_cols))
         for idx, col in enumerate(row2_cols):
             if col in dataframe.columns:
                 with row2[idx]:
-                    selected_values = st.multiselect(f"{col}", options=dataframe[col].unique(), key=f"slicer_{col}")
+                    # Dynamically update slicer options based on other slicers
+                    temp_data = filtered_data.copy()
+                    for other_col, selected_values in filters.items():
+                        if other_col != col:
+                            temp_data = temp_data[temp_data[other_col].isin(selected_values)]
+                    
+                    # Ensure sorted display for Week and Month slicers
+                    if col == "Week" or col == "Month":
+                        available_values = sorted(temp_data[col].unique())
+                    else:
+                        available_values = temp_data[col].unique()
+
+                    # Display the slicer with sorted options for Week and Month
+                    selected_values = st.multiselect(f"{col}", options=available_values, key=f"slicer_{col}")
                     if selected_values:
                         filters[col] = selected_values
-
-        # Apply filters to create filtered_data
-        filtered_data = dataframe.copy()
-        for col, selected_values in filters.items():
-            filtered_data = filtered_data[filtered_data[col].isin(selected_values)]
+                        filtered_data = filtered_data[filtered_data[col].isin(selected_values)]
 
         # Display filtered data preview
         show_data_preview = st.checkbox("Show Filtered Data Preview", value=True, key="data_preview_toggle")
@@ -188,9 +221,10 @@ with col2:
             st.dataframe(filtered_data)
 
     # Use filtered_data as the default data for the rest of the app
-# Ensure `filtered_data` is returned if slicer is active, otherwise use `dataframe`
 if not slicer_active:
     filtered_data = dataframe.copy()
+
+
 
 # Visualization Options
 with st.sidebar.expander("📊 Visualization Options", expanded=True):
@@ -204,6 +238,7 @@ with st.sidebar.expander("📊 Visualization Options", expanded=True):
         chart_type = st.selectbox("Chart Type", ["Bar", "Scatter", "Pie", "Histogram"], key="chart_type")
         threshold = st.number_input("Value Threshold", value=0, help="Display only values above this threshold in the chart.")
         custom_title = st.text_input("Custom Chart Title", value="")
+        
 
         # Additional Option for Stacked Bar Chart
         stacked_by = st.selectbox(
@@ -431,10 +466,10 @@ with st.sidebar.expander("📈 Time-Based Trendline", expanded=True):
     )
 
     # Appreciation/Depreciation Detection
-    enable_app_depr = st.checkbox("Enable Appreciation/Depreciation Detection", key="enable_app_depr")
+    enable_app_depr = st.checkbox("Enable Growth/Depreciation Detection", key="enable_app_depr")
     if enable_app_depr:
         app_depr_threshold = st.number_input(
-            "Enter Percentage Threshold for Appreciation/Depreciation (e.g., 50 for 50%)",
+            "Enter Percentage Threshold for Growth/Depreciation (e.g., 50 for 50%)",
             value=30,
             min_value=1,
             max_value=100,
@@ -1310,6 +1345,8 @@ with st.sidebar.expander("🌀 Clustering Analysis", expanded=True):
 
             else:
                 st.warning("Please select at least two features for clustering.")
+
+
 
 
 
