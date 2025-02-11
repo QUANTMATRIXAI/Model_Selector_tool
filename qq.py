@@ -8,137 +8,66 @@ st.set_page_config(layout="wide")
 
 @st.cache_data
 
-
-
-
-# def load_data(file, apply_method_filter=True, apply_dist_elas_filter=True, apply_cat_elas_filter=True, apply_pval_filter=True):
-#     df = pd.read_excel(file, sheet_name='FinalM0')
-
-#     df['selectedmodels'] = 'no'
-
-#     # Conditionally remove 'Lasso' and 'Ridge' methods
-#     if apply_method_filter:
-#         df = df[~df['method'].isin(['Lasso', 'Ridge'])]
-
-#     # Conditionally apply elasticity filters separately
-#     if apply_dist_elas_filter:
-#         df = df[(df['Distribution_elas'].ge(0) | df['Distribution_elas'].isna())]
-
-#     if apply_cat_elas_filter:
-#         df = df[(df['Category_elas'].ge(0) | df['Category_elas'].isna())]
-
-#     # Conditionally apply p-value filter
-#     if apply_pval_filter:
-#         df = df[df['Price_pval'] == 'Yes']
-
-#     # Conditionally fill NaN values with column mean
-    
-#     df[['Adj.Rsq', 'AIC', 'CSF.CSF']] = df[['Adj.Rsq', 'AIC', 'CSF.CSF']].apply(lambda x: x.fillna(x.mean()))
-
-#     # Select the range of columns from 'Price_elas' to 'beta0'
-#     if 'Price_elas' in df.columns and 'beta0' in df.columns:
-#         elas_to_beta_columns = df.loc[:, 'Price_elas':'beta0'].columns.tolist()
-#     else:
-#         elas_to_beta_columns = []
-
-#     selected_columns = [
-#         'method', 'Channel', 'Market', 'Brand', 'Variant', 'PackType', 'PPG', 'Region', 'Category',
-#         'SubCategory', 'PackSize', 'selectedmodels', 'Adj.Rsq', 'AIC', 'RPIto', 'MCV.MCV', 'CSF.CSF', 'actualdistvar',
-#         'Price_beta', 'Distribution_beta', 'Price_pval', 'Rsq', 'Vol_Var'
-#     ] + elas_to_beta_columns
-
-#     df = df[[col for col in selected_columns if col in df.columns]]
-
-#     required_columns = ['Market', 'Channel', 'Region', 'Category',
-#                         'SubCategory', 'Brand', 'PPG', 'Variant', 'PackType', 'PackSize']
-
-#     columns_with_multiple_unique_values = [
-#         col for col in required_columns if df[col].nunique() > 1
-#     ]
-
-#     for col in ['Market', 'Category', 'Channel']:
-#         if col not in columns_with_multiple_unique_values:
-#             columns_with_multiple_unique_values.append(col)
-
-#     median_csf = df.groupby(columns_with_multiple_unique_values)['CSF.CSF'].median().reset_index()
-#     median_csf.rename(columns={'CSF.CSF': 'Median_CSF'}, inplace=True)
-
-#     df = df.merge(median_csf, on=columns_with_multiple_unique_values, how='left')
-#     df['CSF_Diff'] = abs(df['CSF.CSF'] - df['Median_CSF'])
-
-#     min_diff_idx = df.groupby(columns_with_multiple_unique_values)['CSF_Diff'].idxmin()
-#     df.loc[min_diff_idx, 'selectedmodels'] = 'Yes'
-
-#     df.drop(columns=['Median_CSF', 'CSF_Diff'], inplace=True)
-
-#     return df
-
 def load_data(file, apply_method_filter=True, apply_dist_elas_filter=True, apply_cat_elas_filter=True, apply_pval_filter=True):
     df = pd.read_excel(file, sheet_name='FinalM0')
-    
+ 
     df['selectedmodels'] = 'no'
-    
-    # Define the required columns
-    selected_columns = [
-        'method', 'Channel', 'Market', 'Brand', 'Variant', 'PackType', 'PPG', 'Region', 'Category',
-        'SubCategory', 'PackSize', 'selectedmodels', 'Adj.Rsq', 'AIC', 'RPIto', 'MCV.MCV', 'CSF.CSF', 'actualdistvar',
-        'Price_beta', 'Distribution_beta', 'Price_pval', 'Rsq', 'Vol_Var'
-    ]
-    
-    # Check for missing columns
-    missing_columns = [col for col in selected_columns if col not in df.columns]
-    if missing_columns:
-        raise ValueError(f"Missing columns in input file: {', '.join(missing_columns)}")
-    
+ 
     # Conditionally remove 'Lasso' and 'Ridge' methods
     if apply_method_filter:
         df = df[~df['method'].isin(['Lasso', 'Ridge'])]
-    
+ 
     # Conditionally apply elasticity filters separately
     if apply_dist_elas_filter:
         df = df[(df['Distribution_elas'].ge(0) | df['Distribution_elas'].isna())]
-    
+ 
     if apply_cat_elas_filter:
         df = df[(df['Category_elas'].ge(0) | df['Category_elas'].isna())]
-    
+ 
     # Conditionally apply p-value filter
     if apply_pval_filter:
         df = df[df['Price_pval'] == 'Yes']
-    
+ 
     # Conditionally fill NaN values with column mean
+   
     df[['Adj.Rsq', 'AIC', 'CSF.CSF']] = df[['Adj.Rsq', 'AIC', 'CSF.CSF']].apply(lambda x: x.fillna(x.mean()))
-    
+ 
     # Select the range of columns from 'Price_elas' to 'beta0'
     if 'Price_elas' in df.columns and 'beta0' in df.columns:
         elas_to_beta_columns = df.loc[:, 'Price_elas':'beta0'].columns.tolist()
     else:
         elas_to_beta_columns = []
-    
-    selected_columns += elas_to_beta_columns
+ 
+    selected_columns = [
+        'method', 'Channel', 'Market', 'Brand', 'Variant', 'PackType', 'PPG', 'Region', 'Category',
+        'SubCategory', 'PackSize', 'selectedmodels', 'Adj.Rsq', 'AIC', 'RPIto', 'MCV.MCV', 'CSF.CSF', 'actualdistvar',
+        'Price_beta', 'Distribution_beta', 'Price_pval', 'Rsq', 'Vol_Var'
+    ] + elas_to_beta_columns
+ 
     df = df[[col for col in selected_columns if col in df.columns]]
-    
+ 
     required_columns = ['Market', 'Channel', 'Region', 'Category',
                         'SubCategory', 'Brand', 'PPG', 'Variant', 'PackType', 'PackSize']
-    
+ 
     columns_with_multiple_unique_values = [
         col for col in required_columns if df[col].nunique() > 1
     ]
-    
+ 
     for col in ['Market', 'Category', 'Channel']:
         if col not in columns_with_multiple_unique_values:
             columns_with_multiple_unique_values.append(col)
-    
+ 
     median_csf = df.groupby(columns_with_multiple_unique_values)['CSF.CSF'].median().reset_index()
     median_csf.rename(columns={'CSF.CSF': 'Median_CSF'}, inplace=True)
-    
+ 
     df = df.merge(median_csf, on=columns_with_multiple_unique_values, how='left')
     df['CSF_Diff'] = abs(df['CSF.CSF'] - df['Median_CSF'])
-    
+ 
     min_diff_idx = df.groupby(columns_with_multiple_unique_values)['CSF_Diff'].idxmin()
     df.loc[min_diff_idx, 'selectedmodels'] = 'Yes'
-    
+ 
     df.drop(columns=['Median_CSF', 'CSF_Diff'], inplace=True)
-    
+ 
     return df
 
 
