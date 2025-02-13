@@ -531,45 +531,7 @@ if uploaded_file0:
                         # st.session_state["filtered_data"]=filtered_data
 
 
-                        # Ensure the 'selectedmodels' column exists
-                    # filtered_data['selectedmodels'] = 'No'
-
-                    # # Function to update selectedmodels for each (Channel, Brand) group
-                    # def update_selectedmodels(group):
-                    #     if not group.empty:
-                    #         median_csf = group['CSF.CSF'].median()  # Find the median
-                    #         closest_index = (group['CSF.CSF'] - median_csf).abs().idxmin()  # Get index closest to median
-                    #         group.loc[:, 'selectedmodels'] = 'No'  # Reset all to 'No'
-                    #         group.loc[closest_index, 'selectedmodels'] = 'Yes'  # Set the closest row as 'Yes'
-                    #     return group
-
-                    # # Apply function to ensure only one 'Yes' per (Channel, Brand) combination
-                    # filtered_data = filtered_data.groupby(['Channel', 'Brand'], group_keys=False).apply(update_selectedmodels)
-
-                    # # Store the updated filtered_data in session state
-                    # st.session_state["filtered_data"] = filtered_data
-
-                    # # Update only the 'selectedmodels' column in L0 for rows marked as 'Yes' in filtered_data
-                    # if "L0" in st.session_state:
-                    #     L0 = st.session_state["L0"]
-
-                    #     for (channel, brand), group in filtered_data.groupby(['Channel', 'Brand']):
-                    #         # Reset all 'selectedmodels' to 'No' for this (Channel, Brand) in L0
-                    #         L0.loc[(L0['Channel'] == channel) & (L0['Brand'] == brand), 'selectedmodels'] = 'No'
-
-                    #         # Find the row in filtered_data where 'selectedmodels' is 'Yes'
-                    #         selected_row = group[group['selectedmodels'] == 'Yes']
-
-                    #         if not selected_row.empty:
-                    #             closest_index = selected_row.index[0]  # Get the first matching index
-
-                    #             # Update only the 'selectedmodels' column in L0
-                    #             L0.loc[closest_index, 'selectedmodels'] = 'Yes'
-
-                    # Store the updated L0 in session state **before saving under file_name**
-
-
-                    # Ensure 'selectedmodels' column exists
+                       
 
 
                     # Ensure 'selectedmodels' column exists
@@ -578,6 +540,12 @@ if uploaded_file0:
                     # Initialize session state if not present
                     if "saved_selections" not in st.session_state:
                         st.session_state["saved_selections"] = {}
+
+                    if "saved_buttons" not in st.session_state:
+                        st.session_state["saved_buttons"] = {}
+
+                    if "reset_buttons" not in st.session_state:
+                        st.session_state["reset_buttons"] = {}
 
                     # Function to update 'selectedmodels' column ensuring one "Yes" per (Channel, Brand)
                     def update_selectedmodels(group, brand):
@@ -607,7 +575,7 @@ if uploaded_file0:
                     # UI for selecting models
                     for (channel, brand), group in filtered_data.groupby(["Channel", "Brand"]):
                         available_indices = group.index.tolist()
-                        
+
                         default_index = (
                             group[group["selectedmodels"] == "Yes"].index[0]
                             if "Yes" in group["selectedmodels"].values
@@ -632,19 +600,34 @@ if uploaded_file0:
                                 group["selectedmodels"] = "No"
                                 group.loc[selected_index, "selectedmodels"] = "Yes"
 
-                        col3,col4=st.columns([3,2])
+                        col3, col4 = st.columns([3, 2])
+
+                        # Dynamically set button text based on session state
+                        save_button_text = st.session_state["saved_buttons"].get((channel, brand), f"SAVE Selection {channel} - {brand}")
+                        reset_button_text = st.session_state["reset_buttons"].get((channel, brand), f"RESET Selection {channel} - {brand}")
 
                         with col3:
-                        # Button to save selection
-                            if st.button(f"SAVE Selection {channel} - {brand}", key=f"save_{channel}_{brand}"):
-                                st.session_state["saved_selections"][(channel, brand)] = selected_index
-                                st.success(f"Selection saved for {channel} - {brand} at index {selected_index}")
+                            # Button to save selection
+                            if st.button(save_button_text, key=f"save_{channel}_{brand}"):
+                                if (channel, brand) in st.session_state["saved_selections"]:
+                                    saved_index = st.session_state["saved_selections"][(channel, brand)]
+                                    if saved_index != selected_index:
+                                        st.error(f"Selection already saved for {channel} - {brand} at index {saved_index}.\n\n Please 'RESET' first before changing.")
+                                    else:
+                                        st.success(f"Selection already saved for {channel} - {brand} at index {saved_index}.")
+                                else:
+                                    st.session_state["saved_selections"][(channel, brand)] = selected_index
+                                    st.session_state["saved_buttons"][(channel, brand)] = f"SAVED ✅ ({channel} - {brand})"
+                                    st.session_state["reset_buttons"][(channel, brand)] = f"RESET Selection {channel} - {brand}"
+                                    st.success(f"Selection saved for {channel} - {brand} at index {selected_index}.")
 
                         with col4:
-                        # Button to reset selection
-                            if st.button(f"RESET Selection {channel} - {brand}", key=f"reset_{channel}_{brand}"):
+                            # Button to reset selection
+                            if st.button(reset_button_text, key=f"reset_{channel}_{brand}"):
                                 if (channel, brand) in st.session_state["saved_selections"]:
                                     del st.session_state["saved_selections"][(channel, brand)]
+                                st.session_state["reset_buttons"][(channel, brand)] = f"RESET 🔄 ({channel} - {brand})"
+                                st.session_state["saved_buttons"][(channel, brand)] = f"SAVE Selection {channel} - {brand}"
                                 st.success(f"Selection reset for {channel} - {brand}.\n\n Now updates dynamically.")
 
                         # Store updates in session state
@@ -653,7 +636,7 @@ if uploaded_file0:
                         # Ensure L0 is updated properly with "Yes" for each (Channel, Brand)
                         if "L0" in st.session_state:
                             L0 = st.session_state["L0"]
-                            
+
                             # Reset all selectedmodels to "No" for this Channel-Brand pair in L0
                             L0.loc[(L0["Channel"] == channel) & (L0["Brand"] == brand), "selectedmodels"] = "No"
 
@@ -2954,15 +2937,22 @@ if uploaded_file0:
 
                             # Ensure 'selectedmodels' column exists
                             filtered_data["selectedmodels"] = "No"
-
+    
                             # Initialize session state if not present
                             if "saved_selections" not in st.session_state:
                                 st.session_state["saved_selections"] = {}
-
+    
+                            if "saved_buttons" not in st.session_state:
+                                st.session_state["saved_buttons"] = {}
+    
+                            if "reset_buttons" not in st.session_state:
+                                st.session_state["reset_buttons"] = {}
+    
+    
                             # Function to update 'selectedmodels' column ensuring one "Yes" per (Channel, unique_value)
                             def update_selectedmodels(group, unique_value):
                                 channel = group["Channel"].iloc[0]  # Get the Channel for this group
-
+    
                                 # Check if selection was saved for this (Channel, unique_value)
                                 key = (channel, unique_value)
                                 if key in st.session_state["saved_selections"]:
@@ -2971,19 +2961,19 @@ if uploaded_file0:
                                         group["selectedmodels"] = "No"
                                         group.loc[saved_index, "selectedmodels"] = "Yes"
                                         return group  # Return saved selection
-
+    
                                 # Otherwise, select the row closest to the median CSF.CSF
                                 if not group.empty:
                                     median_csf = group["CSF.CSF"].median()
                                     closest_index = (group["CSF.CSF"] - median_csf).abs().idxmin()
                                     group["selectedmodels"] = "No"
                                     group.loc[closest_index, "selectedmodels"] = "Yes"
-
+    
                                 return group
-
+    
                             # Apply selection logic per (Channel, unique_value)
                             filtered_data = filtered_data.groupby(["Channel", L2_name_column], group_keys=False).apply(update_selectedmodels, unique_value=unique_value)
-
+    
                             # UI for selecting models
                             for (channel, unique_value), group in filtered_data.groupby(["Channel", L2_name_column]):
                                 available_indices = group.index.tolist()
@@ -2993,14 +2983,14 @@ if uploaded_file0:
                                     if "Yes" in group["selectedmodels"].values
                                     else available_indices[0]
                                 )
-
+    
                                 selected_index = st.selectbox(
                                     f"Select Model Index for {channel} - {unique_value}",
                                     options=available_indices,
                                     index=available_indices.index(default_index),
                                     key=f"selectbox_{channel}_{unique_value}"
                                 )
-
+    
                                 # Ensure selectedmodels is locked once saved
                                 if selected_index in group.index:
                                     key = (channel, unique_value)
@@ -3011,40 +3001,56 @@ if uploaded_file0:
                                     else:
                                         group["selectedmodels"] = "No"
                                         group.loc[selected_index, "selectedmodels"] = "Yes"
-
+    
                                 col3,col4=st.columns([3,2])
-
+    
+                                # Dynamically set button text based on session state
+                                save_button_text = st.session_state["saved_buttons"].get((channel, unique_value), f"SAVE Selection {channel} - {unique_value}")
+                                reset_button_text = st.session_state["reset_buttons"].get((channel, unique_value), f"RESET Selection {channel} - {unique_value}")
+    
                                 with col3:
-                                # Button to save selection
-                                    if st.button(f"SAVE Selection {channel} - {unique_value}", key=f"save_{channel}_{unique_value}"):
-                                        st.session_state["saved_selections"][(channel, unique_value)] = selected_index
-                                        st.success(f"Selection saved for {channel} - {unique_value} at index {selected_index}")
-
+                                    # Button to save selection
+                                    if st.button(save_button_text, key=f"save_{channel}_{unique_value}"):
+                                        if (channel, unique_value) in st.session_state["saved_selections"]:
+                                            saved_index = st.session_state["saved_selections"][(channel, unique_value)]
+                                            if saved_index != selected_index:
+                                                st.error(f"Selection already saved for {channel} - {unique_value} at index {saved_index}.\n\n Please 'RESET' first before changing.")
+                                            else:
+                                                st.success(f"Selection already saved for {channel} - {unique_value} at index {saved_index}.")
+                                        else:
+                                            st.session_state["saved_selections"][(channel, unique_value)] = selected_index
+                                            st.session_state["saved_buttons"][(channel, unique_value)] = f"SAVED ✅ ({channel} - {unique_value})"
+                                            st.session_state["reset_buttons"][(channel, unique_value)] = f"RESET Selection {channel} - {unique_value}"
+                                            st.success(f"Selection saved for {channel} - {unique_value} at index {selected_index}.")
+    
+    
                                 with col4:
-                                # Button to reset selection
-                                    if st.button(f"RESET Selection {channel} - {unique_value}", key=f"reset_{channel}_{unique_value}"):
+                                    # Button to reset selection
+                                    if st.button(reset_button_text, key=f"reset_{channel}_{unique_value}"):
                                         if (channel, unique_value) in st.session_state["saved_selections"]:
                                             del st.session_state["saved_selections"][(channel, unique_value)]
+                                        st.session_state["reset_buttons"][(channel, unique_value)] = f"RESET 🔄 ({channel} - {unique_value})"
+                                        st.session_state["saved_buttons"][(channel, unique_value)] = f"SAVE Selection {channel} - {unique_value}"
                                         st.success(f"Selection reset for {channel} - {unique_value}.\n\n Now updates dynamically.")
-
+    
                                 # Store updates in session state
                                 st.session_state["filtered_data"] = filtered_data
-
+    
                                 # Ensure L2 is updated properly with "Yes" for each (Channel, unique_value)
                                 if "L2" in st.session_state:
                                     L2 = st.session_state["L2"]
                                     
                                     # Reset all selectedmodels to "No" for this Channel-Brand pair in L2
                                     L2.loc[(L2["Channel"] == channel) & (L2[L2_name_column] == unique_value), "selectedmodels"] = "No"
-
+    
                                     # Apply the saved selection or median-based selection
                                     selected_row = group[group["selectedmodels"] == "Yes"]
                                     if not selected_row.empty:
                                         selected_idx = selected_row.index[0]
                                         L2.loc[selected_idx, "selectedmodels"] = "Yes"
-
+    
                                     st.session_state["L2"] = L2.copy()
-
+    
                                     # Save updates to the session state file
                                     file_name2 = st.session_state.get("L2file_name", "L2")
                                     st.session_state[file_name2] = L2.copy()
@@ -5470,6 +5476,12 @@ if uploaded_file0:
                                 if "saved_selections" not in st.session_state:
                                     st.session_state["saved_selections"] = {}
 
+                                if "saved_buttons" not in st.session_state:
+                                    st.session_state["saved_buttons"] = {}
+
+                                if "reset_buttons" not in st.session_state:
+                                    st.session_state["reset_buttons"] = {}
+
                                 # Function to update 'selectedmodels' column ensuring one "Yes" per (Channel, unique_value)
                                 def update_selectedmodels(group, unique_value):
                                     channel = group["Channel"].iloc[0]  # Get the Channel for this group
@@ -5525,17 +5537,32 @@ if uploaded_file0:
 
                                     col3,col4=st.columns([3,2])
 
+                                    # Dynamically set button text based on session state
+                                    save_button_text = st.session_state["saved_buttons"].get((channel, unique_value), f"SAVE Selection {channel} - {unique_value}")
+                                    reset_button_text = st.session_state["reset_buttons"].get((channel, unique_value), f"RESET Selection {channel} - {unique_value}")
+
                                     with col3:
-                                    # Button to save selection
-                                        if st.button(f"SAVE Selection {channel} - {unique_value}", key=f"save_{channel}_{unique_value}"):
-                                            st.session_state["saved_selections"][(channel, unique_value)] = selected_index
-                                            st.success(f"Selection saved for {channel} - {unique_value} at index {selected_index}")
+                                        # Button to save selection
+                                        if st.button(save_button_text, key=f"save_{channel}_{unique_value}"):
+                                            if (channel, unique_value) in st.session_state["saved_selections"]:
+                                                saved_index = st.session_state["saved_selections"][(channel, unique_value)]
+                                                if saved_index != selected_index:
+                                                    st.warning(f"Selection already saved for {channel} - {unique_value} at index {saved_index}.\n\n Please 'RESET' first before changing.")
+                                                else:
+                                                    st.success(f"Selection already saved for {channel} - {unique_value} at index {saved_index}.")
+                                            else:
+                                                st.session_state["saved_selections"][(channel, unique_value)] = selected_index
+                                                st.session_state["saved_buttons"][(channel, unique_value)] = f"SAVED ✅ ({channel} - {unique_value})"
+                                                st.session_state["reset_buttons"][(channel, unique_value)] = f"RESET Selection {channel} - {unique_value}"
+                                                st.success(f"Selection saved for {channel} - {unique_value} at index {selected_index}.")
 
                                     with col4:
-                                    # Button to reset selection
-                                        if st.button(f"RESET Selection {channel} - {unique_value}", key=f"reset_{channel}_{unique_value}"):
+                                        # Button to reset selection
+                                        if st.button(reset_button_text, key=f"reset_{channel}_{unique_value}"):
                                             if (channel, unique_value) in st.session_state["saved_selections"]:
                                                 del st.session_state["saved_selections"][(channel, unique_value)]
+                                            st.session_state["reset_buttons"][(channel, unique_value)] = f"RESET 🔄 ({channel} - {unique_value})"
+                                            st.session_state["saved_buttons"][(channel, unique_value)] = f"SAVE Selection {channel} - {unique_value}"
                                             st.success(f"Selection reset for {channel} - {unique_value}.\n\n Now updates dynamically.")
 
                                     # Store updates in session state
@@ -5545,7 +5572,7 @@ if uploaded_file0:
                                     if "L3" in st.session_state:
                                         L3 = st.session_state["L3"]
                                         
-                                        # Reset all selectedmodels to "No" for this Channel-Brand pair in L3
+                                        # Reset all selectedmodels to "No" for this Channel-unique_value pair in L3
                                         L3.loc[(L3["Channel"] == channel) & (L3[L3_name_column] == unique_value), "selectedmodels"] = "No"
 
                                         # Apply the saved selection or median-based selection
@@ -5559,17 +5586,6 @@ if uploaded_file0:
                                         # Save updates to the session state file
                                         file_name3 = st.session_state.get("L3file_name", "L3")
                                         st.session_state[file_name3] = L3.copy()
-
-
-
-
-
-
-
-
-
-
-
 
 
 
