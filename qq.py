@@ -103,19 +103,23 @@ def build_rankings(long_df: pd.DataFrame, dimension_cols: List[str], value_col: 
 
     return pd.concat(rankings, ignore_index=True)
 
-
 def build_contribution_table(
     row: pd.Series,
     beta_cols: List[str],
     elasticity_cols: List[str],
     mean_lookup: Dict[str, str],
-    mean_target: Optional[str],
+    mean_target: Optional[str],   # kept for signature compatibility; not used now
 ) -> pd.DataFrame:
-    mean_y = row.get(mean_target) if mean_target else 1
+    """
+    Builds a table with shares normalized by Σ_i [ beta_i * mean(x_i) ], not by mean(Y).
+    If some beta or mean(x) is missing, that term is skipped in the denominator.
+    """
     contributions = []
-
     elasticity_set = set(elasticity_cols)
 
+    # Collect per-variable numerators and accumulate denominator
+    numerators = []
+    var_rows = []
     for beta_col in beta_cols:
         variable = beta_col.replace("Weighted_Beta_", "", 1)
         beta_value = row.get(beta_col)
@@ -124,24 +128,48 @@ def build_contribution_table(
         matching_elasticity = f"Weighted_Elasticity_{variable}"
         elasticity_value = row.get(matching_elasticity) if matching_elasticity in elasticity_set else pd.NA
 
-        if pd.notna(beta_value) and pd.notna(mean_value) and pd.notna(mean_y) and mean_y != 0:
-            contribution = beta_value * mean_value / mean_y
+        if pd.notna(beta_value) and pd.notna(mean_value):
+            num = float(beta_value) * float(mean_value)
         else:
-            contribution = pd.NA
+            num = pd.NA
 
-        contributions.append(
+        var_rows.append(
             {
                 "Variable": variable,
                 "Coefficient": beta_value,
                 "Mean Value": mean_value,
                 "Elasticity": elasticity_value,
-                "Contribution Share": contribution,
+                "_numerator": num,
+            }
+        )
+        if pd.notna(num):
+            numerators.append(num)
+
+    denom = sum(numerators) if len(numerators) > 0 else None
+
+    # Build final rows with normalized shares
+    for r in var_rows:
+        if denom is not None and denom != 0 and pd.notna(r["_numerator"]):
+            share = r["_numerator"] / denom
+        else:
+            share = pd.NA
+        contributions.append(
+            {
+                "Variable": r["Variable"],
+                "Coefficient": r["Coefficient"],
+                "Mean Value": r["Mean Value"],
+                "Elasticity": r["Elasticity"],
+                # raw contribution (β * mean(x))
+                "Raw Contribution (β·x̄)": r["_numerator"],
+                # normalized by Σ(β·x̄)
+                "Contribution Share": share,
             }
         )
 
     contrib_df = pd.DataFrame(contributions)
     if not contrib_df.empty:
-        contrib_df = contrib_df.sort_values("Contribution Share", ascending=False, na_position="last")
+        # Sort by raw contribution magnitude descending (or by share if you prefer)
+        contrib_df = contrib_df.sort_values("Raw Contribution (β·x̄)", ascending=False, na_position="last")
     return contrib_df
 
 
@@ -337,3 +365,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
