@@ -152,28 +152,77 @@ def format_combination_label(row: pd.Series, dimension_cols: List[str]) -> str:
     return " | ".join(parts)
 
 
+def _read_uploaded_file(uploaded_file, sheet_name: Optional[str]) -> pd.DataFrame:
+    """Read CSV or Excel (with selected sheet)."""
+    name = uploaded_file.name.lower()
+    if name.endswith(".csv"):
+        # Optional: expose delimiter selector if needed
+        return pd.read_csv(uploaded_file)
+    elif name.endswith((".xlsx", ".xls")):
+        # If no sheet given, pandas uses first sheet by default
+        return pd.read_excel(uploaded_file, sheet_name=sheet_name, engine="openpyxl")
+    else:
+        raise ValueError("Unsupported file type. Please upload .csv, .xlsx, or .xls")
+
+
 def main() -> None:
     st.title("Weighted Elasticity & Coefficient Dashboard")
     st.caption("Upload a results file to explore brand/channel drivers and their contributions.")
 
-    uploaded_file = st.file_uploader("Upload CSV export", type=["csv"])
-    sample_path = Path("Results_mape_below_30.csv")
+    # Uploader now accepts CSV and Excel
+    uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx", "xls"])
+
+    # Optional bundled samples (CSV or Excel)
+    sample_csv = Path("Results_mape_below_30.csv")
+    sample_xlsx = Path("Results_mape_below_30.xlsx")
 
     df: pd.DataFrame
+
+    sheet_to_read: Optional[str] = None
     if uploaded_file is not None:
-        df = pd.read_csv(uploaded_file)
-        st.success("File uploaded successfully.")
-    elif sample_path.exists():
-        st.info("No file uploaded. Using bundled sample `Results_mape_below_30.csv`.")
-        df = pd.read_csv(sample_path)
+        try:
+            # If Excel, let user pick the sheet
+            if uploaded_file.name.lower().endswith((".xlsx", ".xls")):
+                try:
+                    xls = pd.ExcelFile(uploaded_file, engine="openpyxl")
+                    if len(xls.sheet_names) == 0:
+                        st.error("No sheets detected in the Excel file.")
+                        st.stop()
+                    sheet_to_read = st.selectbox("Select sheet", options=xls.sheet_names, index=0)
+                    # Reset pointer after probing
+                    uploaded_file.seek(0)
+                except Exception as e:
+                    st.error(f"Could not inspect Excel sheets: {e}")
+                    st.stop()
+
+            df = _read_uploaded_file(uploaded_file, sheet_to_read)
+            ok_msg = f"Loaded `{uploaded_file.name}`"
+            if sheet_to_read:
+                ok_msg += f" • Sheet: `{sheet_to_read}`"
+            st.success(ok_msg)
+
+        except Exception as e:
+            st.error(f"Failed to load file: {e}")
+            st.info("Tip: for Excel support, install `openpyxl` → `pip install openpyxl`")
+            st.stop()
+
+    elif sample_csv.exists() or sample_xlsx.exists():
+        # Prefer CSV sample; else Excel (first sheet)
+        if sample_csv.exists():
+            st.info("No file uploaded. Using bundled sample `Results_mape_below_30.csv`.")
+            df = pd.read_csv(sample_csv)
+        else:
+            st.info("No file uploaded. Using bundled sample `Results_mape_below_30.xlsx` (first sheet).")
+            df = pd.read_excel(sample_xlsx, engine="openpyxl")
     else:
-        st.warning("Upload a CSV file to get started.")
+        st.warning("Upload a CSV or Excel file to get started.")
         st.stop()
 
     if df.empty:
         st.warning("The uploaded dataset is empty.")
         st.stop()
 
+    # ---- downstream logic unchanged ----
     dimension_cols = detect_dimension_columns(df.columns.tolist())
     beta_cols = [c for c in df.columns if c.startswith("Weighted_Beta_")]
     elasticity_cols = [c for c in df.columns if c.startswith("Weighted_Elasticity_")]
@@ -218,25 +267,25 @@ def main() -> None:
 
     with tabs[0]:
         st.subheader("Raw Data Preview")
-        st.dataframe(df.head(100))
+        st.dataframe(df.head(100), use_container_width=True)
         st.subheader("Top Drivers by Combination")
         if extreme_summary.empty:
             st.info("No coefficient or elasticity columns detected after melting.")
         else:
-            st.dataframe(extreme_summary)
+            st.dataframe(extreme_summary, use_container_width=True)
 
     with tabs[1]:
         st.subheader("Coefficient Rankings")
         if coef_rankings.empty:
             st.info("No positive or negative coefficients found.")
         else:
-            st.dataframe(coef_rankings)
+            st.dataframe(coef_rankings, use_container_width=True)
 
         st.subheader("Elasticity Rankings")
         if elasticity_rankings.empty:
             st.info("No positive or negative elasticities found.")
         else:
-            st.dataframe(elasticity_rankings)
+            st.dataframe(elasticity_rankings, use_container_width=True)
 
     with tabs[2]:
         st.subheader("Contribution Explorer")
@@ -266,7 +315,7 @@ def main() -> None:
             if contribution_table.empty:
                 st.warning("Unable to compute contributions. Check that beta/mean columns are present and non-empty.")
             else:
-                st.dataframe(contribution_table)
+                st.dataframe(contribution_table, use_container_width=True)
 
                 chart_data = contribution_table.dropna(subset=["Contribution Share"]).head(25)
                 if not chart_data.empty:
