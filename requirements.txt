@@ -1,5 +1,17 @@
 streamlit
 pandas
+numpy
 plotly
 openpyxl
-
+xlsxwriter
+pyarrow
+streamlit-aggrid
+kaleido
+python-dateutil
+chardet
+# optional:
+# altair
+# polars
+# python-dotenv
+# cachetools
+# tqdm
