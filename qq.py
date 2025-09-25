@@ -151,11 +151,11 @@ def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def apply_optional_filters(df: pd.DataFrame,
-                           use_r2_test: bool, r2_test_min: float,
-                           use_mape_test: bool, mape_test_max: float,
-                           use_neg_price_elast: bool,
-                           use_elast_range: bool, elast_lo: float, elast_hi: float,
-                           use_d1_pos: bool,
+    use_r2_test: bool, r2_test_min: float,
+    use_mape_test: bool, mape_test_max: float,
+    use_neg_price_elast: bool,
+    use_elast_range: bool, elast_lo: float, elast_hi: float,
+    use_d1_pos: bool,
                            use_rpi_neg: bool) -> pd.DataFrame:
     f = df.copy()
 
@@ -212,7 +212,7 @@ def average_across_folds(df: pd.DataFrame, grouping_keys: list[str]):
 
     # also carry Mean_<feature> for equation display
     for c in feature_cols:
-        averaged[f"Mean_{c}"] = averaged[c]
+            averaged[f"Mean_{c}"] = averaged[c]
 
     return averaged, beta_cols, feature_cols
 
@@ -346,9 +346,9 @@ def parse_unit_cost_file(df_like: pd.DataFrame) -> dict:
     cols = {c.lower().strip(): c for c in df_like.columns}
     var_col = None
     cost_col = None
-    for k in ["variable", "var", "feature", "name"]:
+    for k in ["variable", "var", "feature", "name"]: 
         if k in cols: var_col = cols[k]; break
-    for k in ["unit_cost", "cost", "cpc", "cpm"]:
+    for k in ["unit_cost", "cost", "cpc", "cpm"]: 
         if k in cols: cost_col = cols[k]; break
     if var_col is None or cost_col is None:
         # fallback: first two columns
@@ -734,10 +734,9 @@ def show_insights():
 
     display = topn_with_others(df, int(top_n), group_others)
 
-    # =================== BUSINESS-CLEAN: TABLE + SIGNED DIVERGING BAR ===================
+    # =================== BUSINESS-CLEAN: TABLE + SIGNED DIVERGING BAR (RAW NAMES) ===================
     if not display.empty:
         df_view = display.copy()
-        df_view["Pretty"] = df_view["Variable"].map(_pretty)
         df_view["Direction"] = np.where(df_view["SignedShare"] >= 0, "Positive", "Negative")
         df_view["ShareLabel"] = df_view["SignedShare"].map(lambda x: f"<b>{abs(x):.1%}</b>")
         df_view = df_view.sort_values("AbsShare", ascending=True)
@@ -745,11 +744,11 @@ def show_insights():
         # ------- layout: table left, bar right -------
         col_table, col_bar = st.columns([1.1, 1.4])
 
-        # TABLE (left)
+        # TABLE (left) — keep RAW variable names
         with col_table:
             tbl = df_view.copy().sort_values("AbsShare", ascending=False)
             tbl["Share (%)"] = (tbl["AbsShare"] * 100).round(1)
-            tbl = tbl[["Pretty", "Beta", "Mean", "Effect", "Direction", "Share (%)"]].rename(columns={"Pretty": "Variable"})
+            tbl = tbl[["Variable", "Beta", "Mean", "Effect", "Direction", "Share (%)"]]
             st.markdown("<div class='section-title'>Contribution Table</div>", unsafe_allow_html=True)
             st.dataframe(tbl, use_container_width=True, hide_index=True)
             dl_key = f"download_contrib_table_{combo_idx}"
@@ -761,11 +760,11 @@ def show_insights():
                 key=dl_key
             )
 
-        # BAR (right) — signed, negative axis
+        # BAR (right) — signed, negative axis, RAW names on Y
         with col_bar:
             fig = px.bar(
                 df_view,
-                y="Pretty", x="SignedShare",
+                y="Variable", x="SignedShare",
                 orientation="h",
                 color="Direction",
                 color_discrete_map={"Positive": BRAND_GREEN, "Negative": BRAND_RED},
@@ -790,7 +789,7 @@ def show_insights():
             fig.update_yaxes(
                 title_text="Variable",
                 categoryorder="array",
-                categoryarray=df_view["Pretty"].tolist()
+                categoryarray=df_view["Variable"].tolist()
             )
             fig.update_layout(
                 template="plotly_white",
@@ -800,6 +799,7 @@ def show_insights():
                             bgcolor="rgba(255,255,255,0.8)", bordercolor="#e5e7eb", borderwidth=1)
             )
             st.plotly_chart(fig, use_container_width=True)
+
 
     # =================== TOGGLE: FULL GRID (follows filters) ===================
     st.markdown("<div class='section-title'>Explore all combinations</div>", unsafe_allow_html=True)
@@ -1012,135 +1012,481 @@ def show_insights():
             key=dl_grid_key
         )
 
+        # =================== PORTFOLIO — Σ(β×x) contributions (respects filters) ===================
+        import re
+        import numpy as np
+        import pandas as pd
+        import plotly.express as px
+        import streamlit as st
+        import hashlib
 
+        BRAND_GREEN = "#10B981"  # emerald-500
+        BRAND_RED   = "#EF4444"  # red-500
+        BRAND_BLUE  = "#2563EB"  # blue-600 (for Actuals)
+        BRAND_GREEN_SOFT = "#6EE7B7"  # emerald-300 (for Other split)
 
+        def _unique_key(prefix: str, *parts) -> str:
+            h = hashlib.sha1(("|".join(map(str, parts))).encode()).hexdigest()[:8]
+            return f"{prefix}_{h}"
 
-        # Nav
-        colA, colB, colC = st.columns([1,1,2])
-        with colA:
-            if st.button("← Back to Home"):
-                go("home")
-        with colB:
-            if st.button("Go to Optimizer Configurer →", type="secondary"):
-                go("optimizer_config")
-        with colC:
-            if st.button("Go to Marketing Inputs →", type="secondary"):
-                go("optimizer")
+        def _tof(x, default=None):
+            try: return float(x)
+            except Exception: return default
 
-        st.markdown("</div>", unsafe_allow_html=True)
+        def _find_pairs_from_columns(columns):
+            beta_pref = ["Weighted_Beta_", "Selected_Beta_", "Beta_"]
+            mean_pref = ["Mean_", "Selected_Mean_"]
+            pairs = {}
+            for c in columns:
+                if not (isinstance(c, str) and "Beta_" in c): 
+                    continue
+                var = c
+                for p in beta_pref:
+                    if var.startswith(p):
+                        var = var[len(p):]
+                        break
+                beta_col = next((f"{p}{var}" for p in ("Weighted_Beta_","Selected_Beta_","Beta_") if f"{p}{var}" in columns), None)
+                if not beta_col: 
+                    continue
+                mean_col = next((f"{m}{var}" for m in ("Mean_","Selected_Mean_") if f"{m}{var}" in columns), None)
+                pairs[var] = {"beta_col": beta_col, "mean_col": mean_col}
+            return pairs
 
+        def _pretty(v: str) -> str:
+            if not isinstance(v, str): return str(v)
+            s = re.sub(r"_meta(_impression)?$", "", v, flags=re.I)
+            s = re.sub(r"_OUTCOME_.*$", "", s, flags=re.I)
+            s = re.sub(r"_impression$", "", s, flags=re.I)
+            s = s.replace("_", " ")
+            s = re.sub(r"\s+", " ", s).strip()
+            return s[:48] + ("…" if len(s) > 48 else "")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SECTION 3 — OPTIMIZER CONFIGURER (placeholder UI shell)
-# ──────────────────────────────────────────────────────────────────────────────
+        st.markdown("### Portfolio — Contribution from Σ(β×x)")
 
-def show_optimizer_config():
-    st.markdown("<div class='qm-panel'>", unsafe_allow_html=True)
-    st.markdown("<span class='qm-eyebrow'>Section 2</span>", unsafe_allow_html=True)
-    st.markdown("<h2>Optimizer Configurer</h2>", unsafe_allow_html=True)
-    st.caption("Classify variables and set unit costs. You can also upload a unit‑cost file. Your choices are saved for Section 3.")
-
-    saved_models = st.session_state.get("saved_models")
-    raw_results  = st.session_state.get("raw_model_results")
-
-    with st.expander("Optional: Upload a results file to derive variables (if you skipped Section 1)"):
-        up_alt = st.file_uploader("Upload MODEL_RESULTS or Consolidated CSV/Parquet", type=["csv","parquet"], key="cfg_alt_upload")
-        if up_alt is not None:
-            df_alt = pd.read_csv(up_alt) if up_alt.name.lower().endswith(".csv") else pd.read_parquet(up_alt)
-            if saved_models is None:
-                if any(c.startswith("Weighted_Beta_") for c in df_alt.columns):
-                    saved_models = df_alt
-                else:
-                    raw_results = df_alt
-
-    candidates = extract_candidate_variables(raw_results, saved_models)
-    all_feats = candidates.get("all_features", [])
-
-    if not all_feats:
-        st.warning("No variables detected yet. Please run Section 1 (Consolidator) or upload a results file above.")
-        colA, _ = st.columns([1,4])
-        with colA:
-            if st.button("← Back to Home"):
-                go("home")
-        st.markdown("</div>", unsafe_allow_html=True)
-        return
-
-
-    # —— 2-column layout: left = classification, right = unit costs ——
-    left, right = st.columns([3, 4])
-
-    with left:
-        st.markdown("### Variables")
-        c_info1, c_info2, c_info3 = st.columns(3)
-        c_info1.metric("Total", len(all_feats))
-        c_info2.metric("Have Mean_*", len(candidates.get("mean_vars", [])))
-        c_info3.metric("From Betas", len(set(candidates.get("beta_vars", [])) | set(candidates.get("weighted_beta_vars", []))))
-
-        # Selections with suggestions
-        suggested_media = suggest_media_variables(all_feats)
-        default_media = st.session_state.get("optimizer_media", suggested_media)
-        sel_media = st.multiselect("Media variables (spend allocation)", options=all_feats, default=default_media, key="sel_media")
-
-        remaining = [v for v in all_feats if v not in sel_media]
-        default_other = st.session_state.get("optimizer_other", remaining)
-        sel_other = st.multiselect("Other variables (controls / non-spend)", options=all_feats, default=default_other, key="sel_other")
-
-        overlap = set(sel_media) & set(sel_other)
-        if overlap:
-            st.warning("Removed overlaps from 'Other variables': " + ", ".join(sorted(overlap)))
-            sel_other = [v for v in sel_other if v not in overlap]
-
-        if st.button("💾 Save Variable Classes", type="primary", key="btn_save_classes"):
-            st.session_state["optimizer_media"] = sel_media
-            st.session_state["optimizer_other"] = sel_other
-            st.session_state["optimizer_features_all"] = all_feats
-            st.success("Saved variable classes.")
-
-    with right:
-        st.markdown("### Unit costs (CPC/CPx)")
-        st.caption("Currency per 1 unit for each media variable (₹ per click/impression/GRP …). If the var is already spend, use 1.0.")
-
-        # Optional upload of unit-cost file
-        uc_up = st.file_uploader("Optional: Upload unit cost file (CSV/Parquet)", type=["csv","parquet"], key="uc_upload")
-        uploaded_uc_map = {}
-        if uc_up is not None:
-            uc_df = pd.read_csv(uc_up) if uc_up.name.lower().endswith(".csv") else pd.read_parquet(uc_up)
-            uploaded_uc_map = parse_unit_cost_file(uc_df)
-            if uploaded_uc_map:
-                st.success(f"Loaded {len(uploaded_uc_map)} unit costs from file.")
-                st.dataframe(pd.DataFrame({"Variable": list(uploaded_uc_map.keys()), "UnitCost": list(uploaded_uc_map.values())}), use_container_width=True, hide_index=True)
+        # 0) Source DF holding all combinations (products/brands)
+        if "saved_models" not in st.session_state or st.session_state["saved_models"] is None or st.session_state["saved_models"].empty:
+            st.info("No portfolio data found in st.session_state['saved_models'].")
+        else:
+            df_all: pd.DataFrame = st.session_state["saved_models"].copy()
+            pairs_all = _find_pairs_from_columns(df_all.columns)
+            if not pairs_all:
+                st.warning("No Beta/Mean columns found to build portfolio effects.")
             else:
-                st.warning("Could not detect the right columns. Expect ['variable','unit_cost'] or similar.")
+                # 1) Start from the current filter context used in the single view
+                #    Assumes you have variables: show_mode, name_filter, exclude_vars, top_n, group_others defined above.
+                candidate_vars = list(pairs_all.keys())
+                if 'name_filter' in locals() and name_filter:
+                    candidate_vars = [v for v in candidate_vars if re.search(name_filter, v, flags=re.I)]
+                if 'exclude_vars' in locals() and exclude_vars:
+                    candidate_vars = [v for v in candidate_vars if v not in exclude_vars]
+                if not candidate_vars:
+                    st.info("No variables left after filters to compute portfolio.")
+                else:
+                    # 2) Aggregate raw effects across ALL rows (brands/products), respecting Show mode per brand row
+                    effects_sum = {v: 0.0 for v in candidate_vars}
+                    for _, r in df_all.iterrows():
+                        # per-row effect build (optionally mask by sign for 'Show')
+                        row_effects = {}
+                        for v in candidate_vars:
+                            cols = pairs_all[v]
+                            b = _tof(r.get(cols["beta_col"]), None)
+                            m = _tof(r.get(cols["mean_col"]), None) if cols["mean_col"] is not None else None
+                            if b is None or m is None:
+                                continue
+                            e = b * m
+                            # Apply Show filter at row level
+                            if 'show_mode' in locals():
+                                if show_mode == "Positive" and e <= 0: 
+                                    continue
+                                if show_mode == "Negative" and e >= 0: 
+                                    continue
+                            row_effects[v] = e
+                        # Sum into portfolio
+                        for v, e in row_effects.items():
+                            effects_sum[v] += e
 
-        # Merge defaults → uploaded → session values
-        session_uc = st.session_state.get("optimizer_unit_costs", {})
-        base_uc = {v: (1.0 if "spend" in v.lower() else 0.0) for v in st.session_state.get("optimizer_media", sel_media)}
-        # priority: session > uploaded > base
-        merged = {**base_uc, **uploaded_uc_map, **session_uc}
-        # Build editable grid for current media
-        media_now = st.session_state.get("optimizer_media", sel_media)
-        grid_df = pd.DataFrame({
-            "Variable": media_now,
-            "UnitCost": [float(merged.get(v, 0.0)) for v in media_now]
-        })
-        edited = st.data_editor(grid_df, num_rows="dynamic", use_container_width=True, hide_index=True)
+                    # 3) Build portfolio table, compute signed shares over remaining variables
+                    port = pd.DataFrame({
+                        "Variable": list(effects_sum.keys()),
+                        "Portfolio Effect": list(effects_sum.values())
+                    })
+                    # Drop zero-only variables after filters
+                    port = port[port["Portfolio Effect"].ne(0.0)]
 
-        if st.button("💾 Save Unit Costs", key="btn_save_costs"):
-            try:
-                uc_map = {str(r["Variable"]): float(r["UnitCost"]) for _, r in edited.dropna().iterrows()}
-            except Exception:
-                uc_map = {}
-            st.session_state["optimizer_unit_costs"] = uc_map
-            st.success("Unit costs saved.")
+                    if port.empty:
+                        st.info("All portfolio effects are zero under current filters.")
+                    else:
+                        total_effect = float(port["Portfolio Effect"].sum())
+                        if abs(total_effect) < 1e-12:
+                            # fallback to magnitude-normalized shares for readability; keep sign on bar
+                            denom = float(port["Portfolio Effect"].abs().sum())
+                            port["AbsShare"] = port["Portfolio Effect"].abs() / denom if denom > 0 else np.nan
+                            port["SignedShare"] = np.sign(port["Portfolio Effect"]) * port["AbsShare"]
+                        else:
+                            port["SignedShare"] = port["Portfolio Effect"] / total_effect
+                            port["AbsShare"] = port["SignedShare"].abs()
 
-        st.info("Tip: Adjust classes on the left first; the grid follows your Media selection.")
+                        # 4) Top-N + Others (same behavior as single view)
+                        port = port.sort_values("AbsShare", ascending=False).reset_index(drop=True)
+                        if 'group_others' in locals() and group_others and 'top_n' in locals() and len(port) > int(top_n):
+                            N = int(top_n)
+                            top = port.head(N).copy()
+                            rest = port.iloc[N:]
+                            others = pd.DataFrame([{
+                                "Variable": "Others",
+                                "Portfolio Effect": rest["Portfolio Effect"].sum(),
+                                "SignedShare": rest["SignedShare"].sum(),
+                                "AbsShare": abs(rest["SignedShare"].sum())
+                            }])
+                            port = pd.concat([top, others], ignore_index=True)
 
-    # Bottom nav
-    bottom_l, bottom_r = st.columns([1,4])
-    with bottom_l:
-        if st.button("← Back to Home"):
-            go("home")
-    with bottom_r:
+                        # 5) Split Contribution into Own vs Other by variable (stacked), unlinked stay single
+                        plot_df = port.copy().reset_index(drop=True)
+                        _rows = int(plot_df.shape[0]) if isinstance(plot_df, pd.DataFrame) else 10
+                        _height = int(np.clip(30 * max(_rows, 6) + 180, 520, 1100))
+
+                        # Prepare brand mappings if available
+                        def _strip_media_tokens(s: str) -> str:
+                            try:
+                                import re as _re
+                                s2 = str(s)
+                                # Remove common media tokens to improve brand matching
+                                s2 = _re.sub(r"impression_link_clicks?|impressions?|impr|imps|clicks?|google|meta|category|ad|grp|cpm|cpc", " ", s2, flags=_re.I)
+                                return s2
+                            except Exception:
+                                return str(s)
+
+                        def _norm_name(s: str) -> str:
+                            try:
+                                import re as _re
+                                return _re.sub(r"[^a-z0-9]+", "", str(s).lower())
+                            except Exception:
+                                return str(s).lower()
+
+                        brands_list = sorted(df_all["Brand"].astype(str).unique()) if "Brand" in df_all.columns else []
+                        brand_norm_map = {b: _norm_name(b) for b in brands_list}
+                        def map_var_to_brand(var_name: str):
+                            pretty = _pretty(var_name)
+                            pretty = _strip_media_tokens(pretty)
+                            vn = _norm_name(pretty)
+                            best = None
+                            best_len = 0
+                            for b, bn in brand_norm_map.items():
+                                if bn and bn in vn and len(bn) > best_len:
+                                    best = b; best_len = len(bn)
+                            return best
+
+                        # Compute own/other totals per variable across brands
+                        own_signed_list = []
+                        other_signed_list = []
+                        unlinked_signed_list = []
+                        own_effect_list = []
+                        other_effect_list = []
+                        unlinked_effect_list = []
+                        labels_val = []
+                        for _, vv in plot_df.iterrows():
+                            v = vv["Variable"]
+                            total_signed_share = float(vv["SignedShare"]) if pd.notna(vv["SignedShare"]) else 0.0
+                            total_effect_val = _tof(vv.get("Portfolio Effect"), 0.0)
+                            mapped_brand = map_var_to_brand(str(v)) if brands_list else None
+                            if not mapped_brand:
+                                own_signed_list.append(0.0)
+                                other_signed_list.append(0.0)
+                                unlinked_signed_list.append(total_signed_share)
+                                own_effect_list.append(0.0)
+                                other_effect_list.append(0.0)
+                                unlinked_effect_list.append(total_effect_val)
+                                labels_val.append(f"{abs(total_signed_share):.1%}")
+                                continue
+                            own_tot = 0.0; other_tot = 0.0
+                            for _, rr in df_all.iterrows():
+                                cols = pairs_all.get(v, None)
+                                if not cols:
+                                    continue
+                                bcoef = _tof(rr.get(cols["beta_col"]), None)
+                                mval = _tof(rr.get(cols["mean_col"]), None) if cols["mean_col"] is not None else None
+                                if bcoef is None or mval is None:
+                                    continue
+                                eff_val = bcoef * mval
+                                if 'show_mode' in locals():
+                                    if show_mode == "Positive" and eff_val <= 0:
+                                        continue
+                                    if show_mode == "Negative" and eff_val >= 0:
+                                        continue
+                                br = str(rr.get("Brand", ""))
+                                if br == mapped_brand:
+                                    own_tot += eff_val
+                                else:
+                                    other_tot += eff_val
+                            denom = abs(own_tot) + abs(other_tot)
+                            if denom <= 0:
+                                own_signed = 0.0
+                                other_signed = 0.0
+                                unlinked_signed = total_signed_share
+                            else:
+                                sign = 1.0 if total_signed_share >= 0 else -1.0
+                                own_signed = sign * (abs(total_signed_share) * (abs(own_tot) / denom))
+                                other_signed = sign * (abs(total_signed_share) * (abs(other_tot) / denom))
+                                unlinked_signed = total_signed_share - (own_signed + other_signed)
+                            own_signed_list.append(own_signed)
+                            other_signed_list.append(other_signed)
+                            unlinked_signed_list.append(unlinked_signed)
+                            own_effect_list.append(own_tot)
+                            other_effect_list.append(other_tot)
+                            unlinked_effect_list.append(total_effect_val - (own_tot + other_tot))
+                            labels_val.append(f"{abs(total_signed_share):.1%}")
+
+                        plot_df["OwnSigned"] = own_signed_list
+                        plot_df["OtherSigned"] = other_signed_list
+                        plot_df["UnlinkedSigned"] = unlinked_signed_list
+                        plot_df["OwnEffect"] = own_effect_list
+                        plot_df["OtherEffect"] = other_effect_list
+                        plot_df["UnlinkedEffect"] = unlinked_effect_list
+                        # Merge Unlinked into Other so legend shows only Own vs Other
+                        plot_df["OtherMerged"] = plot_df["OtherSigned"] + plot_df["UnlinkedSigned"]
+                        plot_df["OtherEffectMerged"] = plot_df["OtherEffect"] + plot_df["UnlinkedEffect"]
+                        plot_df["Label"] = labels_val
+
+                        own_share_map = dict(zip(plot_df["Variable"], plot_df["OwnSigned"]))
+                        other_share_map = dict(zip(plot_df["Variable"], plot_df["OtherMerged"]))
+                        own_effect_map = dict(zip(plot_df["Variable"], plot_df["OwnEffect"]))
+                        other_effect_map = dict(zip(plot_df["Variable"], plot_df["OtherEffectMerged"]))
+                        port["OwnSigned"] = port["Variable"].map(own_share_map).fillna(0.0)
+                        port["OtherSigned"] = port["Variable"].map(other_share_map).fillna(0.0)
+                        port["OwnEffect"] = port["Variable"].map(own_effect_map).fillna(0.0)
+                        port["OtherEffect"] = port["Variable"].map(other_effect_map).fillna(0.0)
+                        port["OwnAbsShare"] = port["OwnSigned"].abs()
+                        port["OtherAbsShare"] = port["OtherSigned"].abs()
+
+                        # Optional: base table with split columns (kept hidden but ready for download)
+                        disp = port.copy()
+                        disp["Direction"] = np.where(disp["Portfolio Effect"] >= 0, "Positive", "Negative")
+                        disp["Share (%)"] = (disp["AbsShare"] * 100).round(1)
+                        disp["Own Share (%)"] = (disp["OwnAbsShare"] * 100).round(1)
+                        disp["Other Share (%)"] = (disp["OtherAbsShare"] * 100).round(1)
+                        disp = disp[["Variable", "Direction", "Portfolio Effect", "OwnEffect", "OtherEffect", "Share (%)", "Own Share (%)", "Other Share (%)", "SignedShare"]]
+
+                        # st.dataframe(disp.sort_values("Share (%)", ascending=False), use_container_width=True, hide_index=True)
+                        # st.download_button(
+                        #     "📥 Download Portfolio Contributions (Σβx)",
+                        #     data=disp.to_csv(index=False).encode("utf-8"),
+                        #     file_name="portfolio_contributions_sum_betax.csv",
+                        #     mime="text/csv",
+                        #     key=_unique_key("dl_portfolio_sum_betax", len(disp))
+                        # )
+
+                        # Sort by total signed share
+                        plot_df = plot_df.sort_values("SignedShare", ascending=True)
+                        import plotly.graph_objects as go
+                        fig = go.Figure()
+                        fig.add_bar(y=plot_df["Variable"], x=plot_df["OwnSigned"], name="Own", orientation="h",
+                                    marker=dict(color=BRAND_GREEN, line=dict(color="white", width=1.2)),
+                                    text=[f"{abs(x):.1%}" for x in plot_df["OwnSigned"]], textposition="outside", cliponaxis=False)
+                        fig.add_bar(y=plot_df["Variable"], x=plot_df["OtherMerged"], name="Other", orientation="h",
+                                    marker=dict(color="#9CA3AF", line=dict(color="white", width=1.2)),
+                                    text=[f"{abs(x):.1%}" for x in plot_df["OtherMerged"]], textposition="outside", cliponaxis=False)
+                        fig.update_layout(barmode="stack")
+                        # Intelligent asymmetric scaling
+                        neg_min0 = float(min(0.0, plot_df["SignedShare"].min())) if not plot_df.empty else 0.0
+                        pos_max0 = float(max(0.0, plot_df["SignedShare"].clip(lower=0).max())) if not plot_df.empty else 0.0
+                        pad0 = 0.08
+                        left0 = (neg_min0 * (1 + pad0)) if neg_min0 < 0 else -0.05
+                        right0 = (pos_max0 * (1 + pad0)) if pos_max0 > 0 else 0.05
+                        left0 = max(left0, -0.6)
+                        right0 = min(right0, 0.85)
+                        if right0 <= 0.05: right0 = 0.05
+                        if left0 >= -0.05: left0 = -0.05
+                        span0 = right0 - left0
+                        dt0 = 0.1 if span0 > 0.6 else 0.05
+                        fig.update_xaxes(
+                            range=[left0, right0],
+                            tickformat=".0%",
+                            dtick=dt0,
+                            title_text="Portfolio share (signed, from Σβx)",
+                            zeroline=True, zerolinewidth=1.6, zerolinecolor="#9CA3AF",
+                            gridcolor="#E5E7EB",
+                            tickfont=dict(size=12)
+                        )
+                        fig.update_yaxes(title_text="", categoryorder="array", categoryarray=plot_df["Variable"].tolist(), tickfont=dict(size=12))
+                        fig.update_layout(
+                            template="plotly_white",
+                            margin=dict(l=200, r=20, t=64, b=10),
+                            showlegend=True,
+                            bargap=0.25,
+                            hoverlabel=dict(font=dict(size=12)),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.04, xanchor="left", x=0.0,
+                                        bgcolor="rgba(255,255,255,0.8)", bordercolor="#e5e7eb", borderwidth=1, font=dict(size=12)),
+                            title=dict(text="Portfolio Contributions (Σβ×x) — Own vs Other by Variable", x=0.01, y=0.98,
+                                    font=dict(size=18, family="Inter, sans-serif", color="#111827"))
+                        )
+                        # Optional: Upload a variable-level actuals file to compare Actual Share vs Contribution Share
+                        st.markdown("#### Optional: Compare with Actual Totals (one chart)")
+                        vol_file2 = st.file_uploader(
+                            "Upload actuals file (CSV/XLSX). EITHER long [Variable, Value] OR wide with variable columns",
+                            type=["csv", "xlsx", "xls"],
+                            key="upload_portfolio_volume"
+                        )
+                        rendered_combined = False
+                        vol_df2 = None
+                        if vol_file2 is not None:
+                            try:
+                                vol_df2 = pd.read_excel(vol_file2) if vol_file2.name.lower().endswith((".xlsx", ".xls")) else pd.read_csv(vol_file2)
+                            except Exception as e:
+                                st.error(f"Could not read the file: {e}")
+                                vol_df2 = None
+
+                        if isinstance(vol_df2, pd.DataFrame) and not vol_df2.empty:
+                            # Accept both long format (Variable, Value) and wide format (one column per variable)
+                            if {"Variable", "Value"}.issubset(set(vol_df2.columns)):
+                                tmp = vol_df2[["Variable", "Value"]].copy()
+                                tmp["Variable"] = tmp["Variable"].astype(str)
+                                tmp["Value"] = pd.to_numeric(tmp["Value"], errors="coerce").fillna(0.0)
+                                vol_grouped2 = (
+                                    tmp.groupby("Variable", as_index=False)["Value"].sum().rename(columns={"Value": "Total_Actual"})
+                                )
+                            else:
+                                # Wide format: match variable columns and sum across rows per variable
+                                wide = vol_df2.copy()
+                                wide_cols = [c for c in wide.columns if c in set(port["Variable"]) ]
+                                if wide_cols:
+                                    # Melt to long or directly compute totals
+                                    totals = []
+                                    for c in wide_cols:
+                                        try:
+                                            col_vals = pd.to_numeric(wide[c], errors="coerce").fillna(0.0)
+                                            totals.append({"Variable": c, "Total_Actual": float(col_vals.sum())})
+                                        except Exception:
+                                            totals.append({"Variable": c, "Total_Actual": 0.0})
+                                    vol_grouped2 = pd.DataFrame(totals)
+                                else:
+                                    vol_grouped2 = pd.DataFrame(columns=["Variable","Total_Actual"])  # no matching vars
+                                # Align with variables present in portfolio contributions
+                                vol_grouped2 = vol_grouped2[vol_grouped2["Variable"].isin(port["Variable"])].copy()
+                                if not vol_grouped2.empty:
+                                    grand_total2 = float(vol_grouped2["Total_Actual"].sum())
+                                    vol_grouped2["Actual_Share"] = vol_grouped2["Total_Actual"] / grand_total2 if grand_total2 > 0 else 0.0
+
+                                    # Build combined view: Variable, Contribution Share (Abs), Volume Share
+                                    combined2 = pd.merge(
+                                        port[["Variable", "SignedShare", "AbsShare", "Portfolio Effect", "OwnSigned", "OtherSigned", "OwnEffect", "OtherEffect"]],
+                                        vol_grouped2[["Variable", "Actual_Share", "Total_Actual"]],
+                                        on="Variable",
+                                        how="inner"
+                                    )
+                                    if combined2.empty:
+                                        st.info("No overlap between portfolio contributions and uploaded actuals.")
+                                    else:
+                                        combined2["OwnAbsShare"] = combined2["OwnSigned"].fillna(0.0).abs()
+                                        combined2["OtherAbsShare"] = combined2["OtherSigned"].fillna(0.0).abs()
+
+                                        import plotly.graph_objects as go
+                                        fig2 = go.Figure()
+
+                                        def _format_share_effect(share_val, effect_val):
+                                            sv = 0.0 if pd.isna(share_val) else float(share_val)
+                                            ev = 0.0 if pd.isna(effect_val) else float(effect_val)
+                                            return f"{abs(sv):.1%} | {abs(ev):,.0f}"
+
+                                        own_x = combined2["OwnSigned"].fillna(0.0)
+                                        other_x = combined2["OtherSigned"].fillna(0.0)
+                                        actual_x = combined2["Actual_Share"].fillna(0.0)
+                                        total_actual_vals = combined2["Total_Actual"].fillna(0.0)
+                                        own_text = [_format_share_effect(s, e) for s, e in zip(combined2["OwnSigned"], combined2["OwnEffect"])]
+                                        other_text = [_format_share_effect(s, e) for s, e in zip(combined2["OtherSigned"], combined2["OtherEffect"])]
+                                        actual_text = [f"{share:.1%} | {total:,.0f}" for share, total in zip(actual_x, total_actual_vals)]
+
+                                        fig2.add_bar(
+                                            y=combined2["Variable"], x=own_x, orientation="h",
+                                            name="Own Contribution Share",
+                                            marker=dict(color=BRAND_GREEN, line=dict(color="white", width=1.2)),
+                                            text=own_text,
+                                            textposition="outside",
+                                            cliponaxis=False,
+                                            offsetgroup="contrib"
+                                        )
+                                        fig2.add_bar(
+                                            y=combined2["Variable"], x=other_x, orientation="h",
+                                            name="Other Contribution Share",
+                                            marker=dict(color=BRAND_GREEN_SOFT, line=dict(color="white", width=1.2)),
+                                            text=other_text,
+                                            textposition="outside",
+                                            cliponaxis=False,
+                                            offsetgroup="contrib"
+                                        )
+                                        fig2.add_bar(
+                                            y=combined2["Variable"], x=actual_x, orientation="h",
+                                            name="Actual Share",
+                                            marker=dict(color=BRAND_BLUE, line=dict(color="white", width=1.2)),
+                                            text=actual_text,
+                                            textposition="outside",
+                                            cliponaxis=False,
+                                            offsetgroup="actual"
+                                        )
+
+                                        signed_vals = combined2["SignedShare"].fillna(0.0)
+                                        try:
+                                            neg_min = float(min(0.0, signed_vals.min())) if not signed_vals.empty else 0.0
+                                        except Exception:
+                                            neg_min = 0.0
+                                        try:
+                                            pos_max = float(max(
+                                                (actual_x.max() if not actual_x.empty else 0.0),
+                                                (signed_vals.clip(lower=0).max() if not signed_vals.empty else 0.0)
+                                            ))
+                                        except Exception:
+                                            pos_max = 0.0
+                                        pad2 = 0.08
+                                        left = (neg_min * (1 + pad2)) if neg_min < 0 else -0.05
+                                        right = (pos_max * (1 + pad2)) if pos_max > 0 else 0.05
+                                        left = max(left, -0.6)
+                                        right = min(right, 0.85)
+                                        if right <= 0.05:
+                                            right = 0.05
+                                        if left >= -0.05:
+                                            left = -0.05
+                                        span = right - left
+                                        dt = 0.1 if span > 0.6 else 0.05
+                                        fig2.update_xaxes(
+                                            range=[left, right],
+                                            tickformat=".0%",
+                                            dtick=dt,
+                                            title_text="Share (signed for Contribution; positive for Actuals)",
+                                            zeroline=True, zerolinewidth=1.6, zerolinecolor="#9CA3AF",
+                                            gridcolor="#E5E7EB",
+                                            tickfont=dict(size=12)
+                                        )
+                                        order_col = "Actual_Share" if "Actual_Share" in combined2.columns else "AbsShare"
+                                        fig2.update_yaxes(
+                                            title_text="",
+                                            categoryorder="array",
+                                            categoryarray=combined2.sort_values(order_col)["Variable"].tolist(),
+                                            tickfont=dict(size=12)
+                                        )
+                                        fig2.update_layout(
+                                            barmode="relative",
+                                            template="plotly_white",
+                                            margin=dict(l=220, r=20, t=64, b=10),
+                                            bargap=0.25,
+                                            hoverlabel=dict(font=dict(size=12)),
+                                            legend=dict(orientation="h", yanchor="bottom", y=1.04, xanchor="left", x=0.0,
+                                                        bgcolor="rgba(255,255,255,0.8)", bordercolor="#e5e7eb", borderwidth=1, font=dict(size=12)),
+                                            title=dict(text="Portfolio β×x Contribution vs Actual Shares (Own vs Other)", x=0.01, y=0.98,
+                                                    font=dict(size=18, family="Inter, sans-serif", color="#111827"))
+                                        )
+                                        st.plotly_chart(fig2, use_container_width=True)
+                                        rendered_combined = True
+
+                                else:
+                                    st.info("Uploaded volume file has no variables matching the portfolio chart.")
+                                # No specific error here; handled by empty/mismatch info above
+
+                        # Only render base contribution chart if combined chart not shown
+                        if not rendered_combined:
+                            st.plotly_chart(fig, use_container_width=True)
+
+                        # Removed secondary own/other chart; the main chart now shows the split (Own/Other/Unlinked)
+
+    # Navigation
         cgo1, cgo2 = st.columns(2)
         with cgo1:
             if st.button("Go to Marketing Inputs →", key="btn_go_marketing", type="secondary"):
@@ -1151,403 +1497,403 @@ def show_optimizer_config():
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SECTION 3 — OPTIMIZER (placeholder UI shell)
-# ──────────────────────────────────────────────────────────────────────────────
-def show_optimizer():
-    """Section 3 — Marketing Inputs (budgeted).
-    Uses means from results; unit cost converts spend→units.
-    Contextual variables (no budget) come from Section 4.
-    """
-    # ---------- helpers ----------
-    def _beta_for(row: pd.Series, var: str) -> float:
-        for key in [f"Weighted_Beta_{var}", f"Selected_Beta_{var}", f"Beta_{var}"]:
-            if key in row and pd.notna(row[key]):
-                try: return float(row[key])
-                except Exception: pass
-        return 0.0
+# # ──────────────────────────────────────────────────────────────────────────────
+# # SECTION 3 — OPTIMIZER (placeholder UI shell)
+# # ──────────────────────────────────────────────────────────────────────────────
+# def show_optimizer():
+#     """Section 3 — Marketing Inputs (budgeted).
+#     Uses means from results; unit cost converts spend→units.
+#     Contextual variables (no budget) come from Section 4.
+#     """
+#     # ---------- helpers ----------
+#     def _beta_for(row: pd.Series, var: str) -> float:
+#         for key in [f"Weighted_Beta_{var}", f"Selected_Beta_{var}", f"Beta_{var}"]:
+#             if key in row and pd.notna(row[key]):
+#                 try: return float(row[key])
+#                 except Exception: pass
+#         return 0.0
 
-    def _mean_for(row: pd.Series, var: str) -> float:
-        for key in [f"Mean_{var}", f"Selected_Mean_{var}"]:
-            if key in row and pd.notna(row[key]):
-                try: return float(row[key])
-                except Exception: pass
-        return 0.0
+#     def _mean_for(row: pd.Series, var: str) -> float:
+#         for key in [f"Mean_{var}", f"Selected_Mean_{var}"]:
+#             if key in row and pd.notna(row[key]):
+#                 try: return float(row[key])
+#                 except Exception: pass
+#         return 0.0
 
-    def _intercept_for(row: pd.Series) -> float:
-        for key in ["Weighted_B0", "Selected_B0 (Original)", "Selected_B0", "B0 (Original)"]:
-            if key in row and pd.notna(row[key]):
-                try: return float(row[key])
-                except Exception: pass
-        return 0.0
+#     def _intercept_for(row: pd.Series) -> float:
+#         for key in ["Weighted_B0", "Selected_B0 (Original)", "Selected_B0", "B0 (Original)"]:
+#             if key in row and pd.notna(row[key]):
+#                 try: return float(row[key])
+#                 except Exception: pass
+#         return 0.0
 
-    def _combo_label(row: pd.Series, grouping_keys: list[str]) -> str:
-        parts = [f"{k}:{row[k]}" for k in grouping_keys if k in row.index]
-        return " | ".join(parts) if parts else "(combo)"
+#     def _combo_label(row: pd.Series, grouping_keys: list[str]) -> str:
+#         parts = [f"{k}:{row[k]}" for k in grouping_keys if k in row.index]
+#         return " | ".join(parts) if parts else "(combo)"
 
-    def _build_grid(row: pd.Series, media_vars: list[str], unit_costs: dict, existing: pd.DataFrame | None):
-        # Columns: Variable, MEAN, CPU, SPEND (editable)
-        data = []
-        for v in media_vars:
-            mean_x = _mean_for(row, v)
-            cpu = float(unit_costs.get(v, 0.0))
-            spend_default = 0.0
-            if existing is not None and not existing.empty:
-                try:
-                    spend_default = float(existing.loc[existing["Variable"] == v, "SPEND"].values[0])
-                except Exception:
-                    pass
-            data.append({"Variable": v, "MEAN": mean_x, "CPU": cpu, "SPEND": spend_default})
-        return pd.DataFrame(data)
+#     def _build_grid(row: pd.Series, media_vars: list[str], unit_costs: dict, existing: pd.DataFrame | None):
+#         # Columns: Variable, MEAN, CPU, SPEND (editable)
+#         data = []
+#         for v in media_vars:
+#             mean_x = _mean_for(row, v)
+#             cpu = float(unit_costs.get(v, 0.0))
+#             spend_default = 0.0
+#             if existing is not None and not existing.empty:
+#                 try:
+#                     spend_default = float(existing.loc[existing["Variable"] == v, "SPEND"].values[0])
+#                 except Exception:
+#                     pass
+#             data.append({"Variable": v, "MEAN": mean_x, "CPU": cpu, "SPEND": spend_default})
+#         return pd.DataFrame(data)
 
-    def _evaluate(row: pd.Series, grid_df: pd.DataFrame, contextual_levels: dict | None) -> dict:
-        # baseline from means across all features
-        b0 = _intercept_for(row)
-        baseline = b0
-        beta_feats = []
-        for c in row.index:
-            if isinstance(c, str) and (c.startswith("Weighted_Beta_") or c.startswith("Selected_Beta_") or c.startswith("Beta_")):
-                beta_feats.append(c.split("Beta_")[-1])
-        for feat in sorted(set(beta_feats)):
-            baseline += _beta_for(row, feat) * _mean_for(row, feat)
+#     def _evaluate(row: pd.Series, grid_df: pd.DataFrame, contextual_levels: dict | None) -> dict:
+#         # baseline from means across all features
+#         b0 = _intercept_for(row)
+#         baseline = b0
+#         beta_feats = []
+#         for c in row.index:
+#             if isinstance(c, str) and (c.startswith("Weighted_Beta_") or c.startswith("Selected_Beta_") or c.startswith("Beta_")):
+#                 beta_feats.append(c.split("Beta_")[-1])
+#         for feat in sorted(set(beta_feats)):
+#             baseline += _beta_for(row, feat) * _mean_for(row, feat)
 
-        # contextual deltas (no budget): x* - mean
-        ctx_contrib = 0.0
-        if contextual_levels:
-            for k, xstar in contextual_levels.items():
-                if k not in list(grid_df["Variable"]):  # only non-media here
-                    beta = _beta_for(row, k)
-                    if beta != 0:
-                        dx = float(xstar) - _mean_for(row, k)
-                        ctx_contrib += beta * dx
+#         # contextual deltas (no budget): x* - mean
+#         ctx_contrib = 0.0
+#         if contextual_levels:
+#             for k, xstar in contextual_levels.items():
+#                 if k not in list(grid_df["Variable"]):  # only non-media here
+#                     beta = _beta_for(row, k)
+#                     if beta != 0:
+#                         dx = float(xstar) - _mean_for(row, k)
+#                         ctx_contrib += beta * dx
 
-        # marketing deltas via spend→units
-        used_budget = float(grid_df["SPEND"].fillna(0).sum())
-        mkt_rows, mkt_contrib = [], 0.0
-        for _, r in grid_df.iterrows():
-            v = r["Variable"]; cpu = float(r["CPU"]) if pd.notna(r["CPU"]) else 0.0
-            spend = float(r["SPEND"]) if pd.notna(r["SPEND"]) else 0.0
-            mean_x = float(r["MEAN"]) if pd.notna(r["MEAN"]) else 0.0
-            units = 0.0 if cpu <= 0 else spend / cpu
-            dx = units - mean_x
-            beta = _beta_for(row, v)
-            contrib = beta * dx
-            mkt_contrib += contrib
-            mkt_rows.append({"Variable": v, "MEAN": mean_x, "CPU": cpu, "SPEND": spend,
-                             "Units": units, "Delta_X": dx, "Beta": beta, "Contribution": contrib})
+#         # marketing deltas via spend→units
+#         used_budget = float(grid_df["SPEND"].fillna(0).sum())
+#         mkt_rows, mkt_contrib = [], 0.0
+#         for _, r in grid_df.iterrows():
+#             v = r["Variable"]; cpu = float(r["CPU"]) if pd.notna(r["CPU"]) else 0.0
+#             spend = float(r["SPEND"]) if pd.notna(r["SPEND"]) else 0.0
+#             mean_x = float(r["MEAN"]) if pd.notna(r["MEAN"]) else 0.0
+#             units = 0.0 if cpu <= 0 else spend / cpu
+#             dx = units - mean_x
+#             beta = _beta_for(row, v)
+#             contrib = beta * dx
+#             mkt_contrib += contrib
+#             mkt_rows.append({"Variable": v, "MEAN": mean_x, "CPU": cpu, "SPEND": spend,
+#                              "Units": units, "Delta_X": dx, "Beta": beta, "Contribution": contrib})
 
-        predicted = baseline + ctx_contrib + mkt_contrib
-        return {
-            "baseline": baseline,
-            "ctx_contrib": ctx_contrib,
-            "mkt_contrib": mkt_contrib,
-            "predicted": predicted,
-            "used_budget": used_budget,
-            "per_var": pd.DataFrame(mkt_rows),
-        }
+#         predicted = baseline + ctx_contrib + mkt_contrib
+#         return {
+#             "baseline": baseline,
+#             "ctx_contrib": ctx_contrib,
+#             "mkt_contrib": mkt_contrib,
+#             "predicted": predicted,
+#             "used_budget": used_budget,
+#             "per_var": pd.DataFrame(mkt_rows),
+#         }
 
-    def _baseline_spend(grid_df: pd.DataFrame) -> pd.DataFrame:
-        g = grid_df.copy()
-        g["SPEND"] = g.apply(lambda r: float(r["MEAN"]) * float(r["CPU"]) if (pd.notna(r["MEAN"]) and pd.notna(r["CPU"])) else 0.0, axis=1)
-        return g
+#     def _baseline_spend(grid_df: pd.DataFrame) -> pd.DataFrame:
+#         g = grid_df.copy()
+#         g["SPEND"] = g.apply(lambda r: float(r["MEAN"]) * float(r["CPU"]) if (pd.notna(r["MEAN"]) and pd.notna(r["CPU"])) else 0.0, axis=1)
+#         return g
 
-    def _zero_spend(grid_df: pd.DataFrame) -> pd.DataFrame:
-        g = grid_df.copy(); g["SPEND"] = 0.0; return g
+#     def _zero_spend(grid_df: pd.DataFrame) -> pd.DataFrame:
+#         g = grid_df.copy(); g["SPEND"] = 0.0; return g
 
-    def _greedy_max(row: pd.Series, grid_df: pd.DataFrame, budget: float) -> pd.DataFrame:
-        # allocate all budget to best beta-per-dollar (simple stub)
-        g = _zero_spend(grid_df)
-        eff = []
-        for _, r in g.iterrows():
-            v = r["Variable"]; cpu = float(r["CPU"]) if pd.notna(r["CPU"]) else 0.0
-            b = _beta_for(row, v)
-            eff.append((v, (b / cpu) if cpu > 0 else -np.inf))
-        eff.sort(key=lambda x: x[1], reverse=True)
-        if eff and np.isfinite(eff[0][1]) and eff[0][1] > 0:
-            vbest = eff[0][0]
-            idx = g.index[g["Variable"] == vbest][0]
-            g.at[idx, "SPEND"] = float(budget)
-        return g
+#     def _greedy_max(row: pd.Series, grid_df: pd.DataFrame, budget: float) -> pd.DataFrame:
+#         # allocate all budget to best beta-per-dollar (simple stub)
+#         g = _zero_spend(grid_df)
+#         eff = []
+#         for _, r in g.iterrows():
+#             v = r["Variable"]; cpu = float(r["CPU"]) if pd.notna(r["CPU"]) else 0.0
+#             b = _beta_for(row, v)
+#             eff.append((v, (b / cpu) if cpu > 0 else -np.inf))
+#         eff.sort(key=lambda x: x[1], reverse=True)
+#         if eff and np.isfinite(eff[0][1]) and eff[0][1] > 0:
+#             vbest = eff[0][0]
+#             idx = g.index[g["Variable"] == vbest][0]
+#             g.at[idx, "SPEND"] = float(budget)
+#         return g
 
-    # ---------- UI ----------
-    st.markdown("<div class='qm-panel'>", unsafe_allow_html=True)
-    st.markdown("<span class='qm-eyebrow'>Section 3</span>", unsafe_allow_html=True)
-    st.markdown("<h2>Marketing Inputs</h2>", unsafe_allow_html=True)
-    st.caption("Budget applies to marketing variables only. Contextual changes come from the Contextual Inputs page.")
+#     # ---------- UI ----------
+#     st.markdown("<div class='qm-panel'>", unsafe_allow_html=True)
+#     st.markdown("<span class='qm-eyebrow'>Section 3</span>", unsafe_allow_html=True)
+#     st.markdown("<h2>Marketing Inputs</h2>", unsafe_allow_html=True)
+#     st.caption("Budget applies to marketing variables only. Contextual changes come from the Contextual Inputs page.")
 
-    saved_models = st.session_state.get("saved_models")
-    grouping_keys = st.session_state.get("grouping_keys", [])
-    media_vars = st.session_state.get("optimizer_media", [])
-    unit_costs = st.session_state.get("optimizer_unit_costs", {})
-    contextual_levels = st.session_state.get("contextual_levels", {})
+#     saved_models = st.session_state.get("saved_models")
+#     grouping_keys = st.session_state.get("grouping_keys", [])
+#     media_vars = st.session_state.get("optimizer_media", [])
+#     unit_costs = st.session_state.get("optimizer_unit_costs", {})
+#     contextual_levels = st.session_state.get("contextual_levels", {})
 
-    if saved_models is None or saved_models.empty:
-        st.warning("No consolidated models in session. Run Section 1 first.")
-        colA, _ = st.columns([1,4])
-        with colA:
-            if st.button("← Back to Home"): go("home")
-        st.markdown("</div>", unsafe_allow_html=True)
-        return
+#     if saved_models is None or saved_models.empty:
+#         st.warning("No consolidated models in session. Run Section 1 first.")
+#         colA, _ = st.columns([1,4])
+#         with colA:
+#             if st.button("← Back to Home"): go("home")
+#         st.markdown("</div>", unsafe_allow_html=True)
+#         return
 
-    if not grouping_keys:
-        blacklist_prefix = ("Weighted_", "Selected_", "Mean_", "Models_Used", "Best_", "Avg_", "Equation_Complete", "Y_Pred_")
-        grouping_keys = [c for c in saved_models.columns if not str(c).startswith(blacklist_prefix)][:3]
-    labels = [" | ".join([f"{k}:{saved_models.iloc[i][k]}" for k in grouping_keys]) for i in range(len(saved_models))]
+#     if not grouping_keys:
+#         blacklist_prefix = ("Weighted_", "Selected_", "Mean_", "Models_Used", "Best_", "Avg_", "Equation_Complete", "Y_Pred_")
+#         grouping_keys = [c for c in saved_models.columns if not str(c).startswith(blacklist_prefix)][:3]
+#     labels = [" | ".join([f"{k}:{saved_models.iloc[i][k]}" for k in grouping_keys]) for i in range(len(saved_models))]
 
-    st.markdown("### Choose Combination")
-    combo_idx = st.selectbox("Combination", options=list(range(len(saved_models))), format_func=lambda i: labels[i], key="combo_select_a")
-    row = saved_models.iloc[combo_idx]
+#     st.markdown("### Choose Combination")
+#     combo_idx = st.selectbox("Combination", options=list(range(len(saved_models))), format_func=lambda i: labels[i], key="combo_select_a")
+#     row = saved_models.iloc[combo_idx]
 
-    grid_key = f"mkt_grid_{combo_idx}"
-    existing = st.session_state.get(grid_key)
-    planner_grid = _build_grid(row, media_vars, unit_costs, existing)
+#     grid_key = f"mkt_grid_{combo_idx}"
+#     existing = st.session_state.get(grid_key)
+#     planner_grid = _build_grid(row, media_vars, unit_costs, existing)
 
-    left, right = st.columns([3,2])
-    with left:
-        st.markdown("### Marketing Inputs Table")
-        colcfg = {
-            "Variable": st.column_config.TextColumn(disabled=True),
-            "MEAN":     st.column_config.NumberColumn(format="%.3f", disabled=True),
-            "CPU":      st.column_config.NumberColumn(help="Currency per 1 unit", format="%.6f", disabled=True),
-            "SPEND":    st.column_config.NumberColumn(format="%.2f"),
-        }
-        planner_grid = st.data_editor(planner_grid, use_container_width=True, hide_index=True,
-                                      column_config=colcfg, key=f"mkt_grid_edit_{combo_idx}")
+#     left, right = st.columns([3,2])
+#     with left:
+#         st.markdown("### Marketing Inputs Table")
+#         colcfg = {
+#             "Variable": st.column_config.TextColumn(disabled=True),
+#             "MEAN":     st.column_config.NumberColumn(format="%.3f", disabled=True),
+#             "CPU":      st.column_config.NumberColumn(help="Currency per 1 unit", format="%.6f", disabled=True),
+#             "SPEND":    st.column_config.NumberColumn(format="%.2f"),
+#         }
+#         planner_grid = st.data_editor(planner_grid, use_container_width=True, hide_index=True,
+#                                       column_config=colcfg, key=f"mkt_grid_edit_{combo_idx}")
 
-    with right:
-        st.markdown("### Budget & Actions")
-        total_budget = st.number_input("Total budget", value=10000.0, step=100.0, key=f"mkt_budget_{combo_idx}")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            if st.button("Baseline Spend", key=f"btn_base_{combo_idx}"):
-                planner_grid = _baseline_spend(planner_grid)
-        with c2:
-            if st.button("Zero Spend", key=f"btn_zero_{combo_idx}"):
-                planner_grid = _zero_spend(planner_grid)
-        with c3:
-            if st.button("Max within Budget", key=f"btn_max_{combo_idx}"):
-                planner_grid = _greedy_max(row, planner_grid, total_budget)
-        run = st.button("Evaluate Scenario", type="primary", key=f"btn_eval_mkt_{combo_idx}")
-        if st.button("Go to Contextual Inputs →", key=f"btn_go_ctx_{combo_idx}"):
-            go("contextual")
+#     with right:
+#         st.markdown("### Budget & Actions")
+#         total_budget = st.number_input("Total budget", value=10000.0, step=100.0, key=f"mkt_budget_{combo_idx}")
+#         c1, c2, c3 = st.columns(3)
+#         with c1:
+#             if st.button("Baseline Spend", key=f"btn_base_{combo_idx}"):
+#                 planner_grid = _baseline_spend(planner_grid)
+#         with c2:
+#             if st.button("Zero Spend", key=f"btn_zero_{combo_idx}"):
+#                 planner_grid = _zero_spend(planner_grid)
+#         with c3:
+#             if st.button("Max within Budget", key=f"btn_max_{combo_idx}"):
+#                 planner_grid = _greedy_max(row, planner_grid, total_budget)
+#         run = st.button("Evaluate Scenario", type="primary", key=f"btn_eval_mkt_{combo_idx}")
+#         if st.button("Go to Contextual Inputs →", key=f"btn_go_ctx_{combo_idx}"):
+#             go("contextual")
 
-    st.session_state[grid_key] = planner_grid
+#     st.session_state[grid_key] = planner_grid
 
-    if run:
-        res = _evaluate(row, planner_grid, contextual_levels)
-        m1, m2, m3 = st.columns(3)
-        with m1: st.metric("Projected Volume (Pred)", f"{res['predicted']:,.2f}",
-                           delta=f"+{(res['predicted']-res['baseline']):,.2f}")
-        with m2: st.metric("Baseline Volume (Mean)", f"{res['baseline']:,.2f}")
-        with m3: st.metric("Budget Used", f"{res['used_budget']:,.2f}")
-        tab1, tab2 = st.tabs(["Per-variable", "Contribs"])
-        with tab1: st.dataframe(res["per_var"], use_container_width=True, hide_index=True)
-        with tab2: st.write({"Contextual": res["ctx_contrib"], "Marketing": res["mkt_contrib"]})
+#     if run:
+#         res = _evaluate(row, planner_grid, contextual_levels)
+#         m1, m2, m3 = st.columns(3)
+#         with m1: st.metric("Projected Volume (Pred)", f"{res['predicted']:,.2f}",
+#                            delta=f"+{(res['predicted']-res['baseline']):,.2f}")
+#         with m2: st.metric("Baseline Volume (Mean)", f"{res['baseline']:,.2f}")
+#         with m3: st.metric("Budget Used", f"{res['used_budget']:,.2f}")
+#         tab1, tab2 = st.tabs(["Per-variable", "Contribs"])
+#         with tab1: st.dataframe(res["per_var"], use_container_width=True, hide_index=True)
+#         with tab2: st.write({"Contextual": res["ctx_contrib"], "Marketing": res["mkt_contrib"]})
 
-    colA, _ = st.columns([1,4])
-    with colA:
-        if st.button("← Back to Home"): go("home")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
+#     colA, _ = st.columns([1,4])
+#     with colA:
+#         if st.button("← Back to Home"): go("home")
+#     st.markdown("</div>", unsafe_allow_html=True)
 
 
 
-    # Build combo labels
-    if not grouping_keys:
-        blacklist_prefix = ("Weighted_", "Selected_", "Mean_", "Models_Used", "Best_", "Avg_", "Equation_Complete", "Y_Pred_")
-        grouping_keys = [c for c in saved_models.columns if not str(c).startswith(blacklist_prefix)][:3]
-    combo_labels = []
-    for _, row in saved_models.iterrows():
-        parts = [f"{k}:{row[k]}" for k in grouping_keys if k in saved_models.columns]
-        combo_labels.append(" | ".join(parts) if parts else f"row_{_}")
-
-    # —— Layout: left inputs / right budget-bounds — better space mgmt ——
-    left, right = st.columns([3, 2])
-
-    with left:
-        st.markdown("### Combinations")
-        sel_indices = st.multiselect(
-            "Select combinations",
-            options=list(range(len(saved_models))),
-            default=list(range(len(saved_models)))[: min(5, len(saved_models))],
-            format_func=lambda i: combo_labels[i]
-        )
-        if media_vars:
-            st.markdown("### Media variables")
-            st.caption(", ".join(media_vars))
-        else:
-            st.info("No media variables configured. Go to Section 2 to set them.")
-
-    with right:
-        st.markdown("### Budget & Bounds")
-        total_budget = st.number_input("Total budget", value=10000.0, step=100.0)
-        lb = st.number_input("Lower bound per media var", value=0.0, step=10.0)
-        ub = st.number_input("Upper bound per media var", value=1e9, step=1000.0)
-        run = st.button("▶️ Run IPOPT (skeleton)", type="primary")
-
-    if run:
-        unit_costs = st.session_state.get("optimizer_unit_costs", {})
-        if not sel_indices:
-            st.error("Pick at least one combination.")
-        elif not media_vars:
-            st.error("Define media variables in Section 2.")
-        elif not unit_costs or any(v not in unit_costs or unit_costs[v] <= 0 for v in media_vars):
-            missing = [v for v in media_vars if v not in unit_costs or unit_costs[v] <= 0]
-            st.error("Set positive unit costs for: " + ", ".join(missing))
-        else:
-            n_vars = len(media_vars)
-            per_var_spend = float(np.clip(total_budget / max(n_vars, 1), lb, ub))
-            allocation_rows = []
-            summary_rows = []
-
-            for i in sel_indices:
-                row = saved_models.iloc[i]
-                combo_id = " | ".join([f"{k}:{row[k]}" for k in grouping_keys if k in saved_models.columns])
-                alloc_map = {v: per_var_spend for v in media_vars}
-                res = predict_from_allocation(row, media_vars, alloc_map, unit_costs)
-
-                for v in media_vars:
-                    allocation_rows.append({
-                        "Combination": combo_id,
-                        "Variable": v,
-                        "Spend": alloc_map[v],
-                        "UnitCost": unit_costs.get(v, np.nan),
-                        "Delta_X": res["per_var_dx"][v],
-                        "Beta": _beta_for(row, v),
-                        "Contribution": _beta_for(row, v) * res["per_var_dx"][v],
-                    })
-
-                summary_rows.append({
-                    "Combination": combo_id,
-                    "Budget": total_budget,
-                    "Baseline_Y": res["baseline_y"],
-                    "Predicted_Y": res["predicted_y"],
-                    "Lift_Y": res["lift_y"],
-                    "Lift_per_$": (res["lift_y"] / total_budget) if total_budget else np.nan,
-                })
-
-            alloc_df = pd.DataFrame(allocation_rows)
-            summ_df = pd.DataFrame(summary_rows)
-            st.session_state["optimizer_allocation"] = alloc_df
-            st.session_state["optimizer_summary"] = summ_df
-
-            st.success("Allocation evaluated using unit costs and model betas (linear response). IPOPT hook next.")
-            tab1, tab2 = st.tabs(["Allocation breakdown", "Summary"])
-            with tab1:
-                st.dataframe(alloc_df, use_container_width=True, hide_index=True)
-                st.download_button("📥 Download Allocation Breakdown", data=alloc_df.to_csv(index=False).encode("utf-8"), file_name="allocation_breakdown.csv", mime="text/csv")
-            with tab2:
-                st.dataframe(summ_df, use_container_width=True, hide_index=True)
-                st.download_button("📥 Download Summary", data=summ_df.to_csv(index=False).encode("utf-8"), file_name="allocation_summary.csv", mime="text/csv")
-
-    colA, colB = st.columns([1,4])
-    with colA:
-        if st.button("← Back to Home"):
-            go("home")
-    st.markdown("</div>", unsafe_allow_html=True)
 
 
-    # Build combo labels
-    if not grouping_keys:
-        # fallback: any non-weighted/non-selected metric columns at start
-        blacklist_prefix = ("Weighted_", "Selected_", "Mean_", "Models_Used", "Best_", "Avg_", "Equation_Complete", "Y_Pred_")
-        grouping_keys = [c for c in saved_models.columns if not str(c).startswith(blacklist_prefix)][:3]
-    combo_labels = []
-    for _, row in saved_models.iterrows():
-        parts = [f"{k}:{row[k]}" for k in grouping_keys if k in saved_models.columns]
-        combo_labels.append(" | ".join(parts) if parts else f"row_{_}")
+#     # Build combo labels
+#     if not grouping_keys:
+#         blacklist_prefix = ("Weighted_", "Selected_", "Mean_", "Models_Used", "Best_", "Avg_", "Equation_Complete", "Y_Pred_")
+#         grouping_keys = [c for c in saved_models.columns if not str(c).startswith(blacklist_prefix)][:3]
+#     combo_labels = []
+#     for _, row in saved_models.iterrows():
+#         parts = [f"{k}:{row[k]}" for k in grouping_keys if k in saved_models.columns]
+#         combo_labels.append(" | ".join(parts) if parts else f"row_{_}")
 
-    # Selection UI
-    st.markdown("**Select combinations to optimize**")
-    sel_indices = st.multiselect(
-        "Combinations",
-        options=list(range(len(saved_models))),
-        default=list(range(len(saved_models)))[: min(5, len(saved_models))],
-        format_func=lambda i: combo_labels[i]
-    )
+#     # —— Layout: left inputs / right budget-bounds — better space mgmt ——
+#     left, right = st.columns([3, 2])
 
-    st.markdown("**Budget**")
-    total_budget = st.number_input("Total budget (currency units)", value=10000.0, step=100.0)
+#     with left:
+#         st.markdown("### Combinations")
+#         sel_indices = st.multiselect(
+#             "Select combinations",
+#             options=list(range(len(saved_models))),
+#             default=list(range(len(saved_models)))[: min(5, len(saved_models))],
+#             format_func=lambda i: combo_labels[i]
+#         )
+#         if media_vars:
+#             st.markdown("### Media variables")
+#             st.caption(", ".join(media_vars))
+#         else:
+#             st.info("No media variables configured. Go to Section 2 to set them.")
 
-    if not media_vars:
-        st.info("No media variables configured. Go to Section 2 to set media/control variables.")
-    else:
-        st.markdown("**Media variables (decision investments)**")
-        st.caption(", ".join(media_vars))
+#     with right:
+#         st.markdown("### Budget & Bounds")
+#         total_budget = st.number_input("Total budget", value=10000.0, step=100.0)
+#         lb = st.number_input("Lower bound per media var", value=0.0, step=10.0)
+#         ub = st.number_input("Upper bound per media var", value=1e9, step=1000.0)
+#         run = st.button("▶️ Run IPOPT (skeleton)", type="primary")
 
-    # Placeholder bounds grid (future: per combo & per var bounds)
-    st.markdown("**Bounds (skeleton)**")
-    lb = st.number_input("Lower bound per media var", value=0.0, step=10.0)
-    ub = st.number_input("Upper bound per media var", value=1e9, step=1000.0)
+#     if run:
+#         unit_costs = st.session_state.get("optimizer_unit_costs", {})
+#         if not sel_indices:
+#             st.error("Pick at least one combination.")
+#         elif not media_vars:
+#             st.error("Define media variables in Section 2.")
+#         elif not unit_costs or any(v not in unit_costs or unit_costs[v] <= 0 for v in media_vars):
+#             missing = [v for v in media_vars if v not in unit_costs or unit_costs[v] <= 0]
+#             st.error("Set positive unit costs for: " + ", ".join(missing))
+#         else:
+#             n_vars = len(media_vars)
+#             per_var_spend = float(np.clip(total_budget / max(n_vars, 1), lb, ub))
+#             allocation_rows = []
+#             summary_rows = []
 
-    run = st.button("▶️ Run IPOPT (skeleton)", type="primary")
+#             for i in sel_indices:
+#                 row = saved_models.iloc[i]
+#                 combo_id = " | ".join([f"{k}:{row[k]}" for k in grouping_keys if k in saved_models.columns])
+#                 alloc_map = {v: per_var_spend for v in media_vars}
+#                 res = predict_from_allocation(row, media_vars, alloc_map, unit_costs)
 
-    if run:
-        unit_costs = st.session_state.get("optimizer_unit_costs", {})
-        if not sel_indices:
-            st.error("Pick at least one combination.")
-        elif not media_vars:
-            st.error("Define media variables in Section 2.")
-        elif not unit_costs or any(v not in unit_costs or unit_costs[v] <= 0 for v in media_vars):
-            missing = [v for v in media_vars if v not in unit_costs or unit_costs[v] <= 0]
-            st.error("Set positive unit costs for: " + ", ".join(missing))
-        else:
-            n_vars = len(media_vars)
-            per_var_spend = float(np.clip(total_budget / max(n_vars, 1), lb, ub))
-            allocation_rows = []
-            summary_rows = []
+#                 for v in media_vars:
+#                     allocation_rows.append({
+#                         "Combination": combo_id,
+#                         "Variable": v,
+#                         "Spend": alloc_map[v],
+#                         "UnitCost": unit_costs.get(v, np.nan),
+#                         "Delta_X": res["per_var_dx"][v],
+#                         "Beta": _beta_for(row, v),
+#                         "Contribution": _beta_for(row, v) * res["per_var_dx"][v],
+#                     })
 
-            for i in sel_indices:
-                row = saved_models.iloc[i]
-                combo_id = " | ".join([f"{k}:{row[k]}" for k in grouping_keys if k in saved_models.columns])
-                alloc_map = {v: per_var_spend for v in media_vars}
-                res = predict_from_allocation(row, media_vars, alloc_map, unit_costs)
+#                 summary_rows.append({
+#                     "Combination": combo_id,
+#                     "Budget": total_budget,
+#                     "Baseline_Y": res["baseline_y"],
+#                     "Predicted_Y": res["predicted_y"],
+#                     "Lift_Y": res["lift_y"],
+#                     "Lift_per_$": (res["lift_y"] / total_budget) if total_budget else np.nan,
+#                 })
 
-                for v in media_vars:
-                    allocation_rows.append({
-                        "Combination": combo_id,
-                        "Variable": v,
-                        "Spend": alloc_map[v],
-                        "UnitCost": unit_costs.get(v, np.nan),
-                        "Delta_X": res["per_var_dx"][v],
-                        "Beta": _beta_for(row, v),
-                        "Contribution": _beta_for(row, v) * res["per_var_dx"][v],
-                    })
+#             alloc_df = pd.DataFrame(allocation_rows)
+#             summ_df = pd.DataFrame(summary_rows)
+#             st.session_state["optimizer_allocation"] = alloc_df
+#             st.session_state["optimizer_summary"] = summ_df
 
-                summary_rows.append({
-                    "Combination": combo_id,
-                    "Budget": total_budget,
-                    "Baseline_Y": res["baseline_y"],
-                    "Predicted_Y": res["predicted_y"],
-                    "Lift_Y": res["lift_y"],
-                    "Lift_per_$": (res["lift_y"] / total_budget) if total_budget else np.nan,
-                })
+#             st.success("Allocation evaluated using unit costs and model betas (linear response). IPOPT hook next.")
+#             tab1, tab2 = st.tabs(["Allocation breakdown", "Summary"])
+#             with tab1:
+#                 st.dataframe(alloc_df, use_container_width=True, hide_index=True)
+#                 st.download_button("📥 Download Allocation Breakdown", data=alloc_df.to_csv(index=False).encode("utf-8"), file_name="allocation_breakdown.csv", mime="text/csv")
+#             with tab2:
+#                 st.dataframe(summ_df, use_container_width=True, hide_index=True)
+#                 st.download_button("📥 Download Summary", data=summ_df.to_csv(index=False).encode("utf-8"), file_name="allocation_summary.csv", mime="text/csv")
 
-            alloc_df = pd.DataFrame(allocation_rows)
-            summ_df = pd.DataFrame(summary_rows)
-            st.session_state["optimizer_allocation"] = alloc_df
-            st.session_state["optimizer_summary"] = summ_df
-
-            st.success("Allocation evaluated using unit costs and model betas (linear response). IPOPT hook next.")
-            st.subheader("Per-variable allocation breakdown")
-            st.dataframe(alloc_df, use_container_width=True, hide_index=True)
-            st.download_button("📥 Download Allocation Breakdown", data=alloc_df.to_csv(index=False).encode("utf-8"), file_name="allocation_breakdown.csv", mime="text/csv")
-
-            st.subheader("Combination summary")
-            st.dataframe(summ_df, use_container_width=True, hide_index=True)
-            st.download_button("📥 Download Summary", data=summ_df.to_csv(index=False).encode("utf-8"), file_name="allocation_summary.csv", mime="text/csv")
-
-    colA, colB = st.columns([1,4])
-    with colA:
-        if st.button("← Back to Home"):
-            go("home")
-    st.markdown("</div>", unsafe_allow_html=True)
+#     colA, colB = st.columns([1,4])
+#     with colA:
+#         if st.button("← Back to Home"):
+#             go("home")
+#     st.markdown("</div>", unsafe_allow_html=True)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# HOME — Three Cards (Consolidator, Optimizer Configurer, Optimizer)
-# ──────────────────────────────────────────────────────────────────────────────
+#     # Build combo labels
+#     if not grouping_keys:
+#         # fallback: any non-weighted/non-selected metric columns at start
+#         blacklist_prefix = ("Weighted_", "Selected_", "Mean_", "Models_Used", "Best_", "Avg_", "Equation_Complete", "Y_Pred_")
+#         grouping_keys = [c for c in saved_models.columns if not str(c).startswith(blacklist_prefix)][:3]
+#     combo_labels = []
+#     for _, row in saved_models.iterrows():
+#         parts = [f"{k}:{row[k]}" for k in grouping_keys if k in saved_models.columns]
+#         combo_labels.append(" | ".join(parts) if parts else f"row_{_}")
+
+#     # Selection UI
+#     st.markdown("**Select combinations to optimize**")
+#     sel_indices = st.multiselect(
+#         "Combinations",
+#         options=list(range(len(saved_models))),
+#         default=list(range(len(saved_models)))[: min(5, len(saved_models))],
+#         format_func=lambda i: combo_labels[i]
+#     )
+
+#     st.markdown("**Budget**")
+#     total_budget = st.number_input("Total budget (currency units)", value=10000.0, step=100.0)
+
+#     if not media_vars:
+#         st.info("No media variables configured. Go to Section 2 to set media/control variables.")
+#     else:
+#         st.markdown("**Media variables (decision investments)**")
+#         st.caption(", ".join(media_vars))
+
+#     # Placeholder bounds grid (future: per combo & per var bounds)
+#     st.markdown("**Bounds (skeleton)**")
+#     lb = st.number_input("Lower bound per media var", value=0.0, step=10.0)
+#     ub = st.number_input("Upper bound per media var", value=1e9, step=1000.0)
+
+#     run = st.button("▶️ Run IPOPT (skeleton)", type="primary")
+
+#     if run:
+#         unit_costs = st.session_state.get("optimizer_unit_costs", {})
+#         if not sel_indices:
+#             st.error("Pick at least one combination.")
+#         elif not media_vars:
+#             st.error("Define media variables in Section 2.")
+#         elif not unit_costs or any(v not in unit_costs or unit_costs[v] <= 0 for v in media_vars):
+#             missing = [v for v in media_vars if v not in unit_costs or unit_costs[v] <= 0]
+#             st.error("Set positive unit costs for: " + ", ".join(missing))
+#         else:
+#             n_vars = len(media_vars)
+#             per_var_spend = float(np.clip(total_budget / max(n_vars, 1), lb, ub))
+#             allocation_rows = []
+#             summary_rows = []
+
+#             for i in sel_indices:
+#                 row = saved_models.iloc[i]
+#                 combo_id = " | ".join([f"{k}:{row[k]}" for k in grouping_keys if k in saved_models.columns])
+#                 alloc_map = {v: per_var_spend for v in media_vars}
+#                 res = predict_from_allocation(row, media_vars, alloc_map, unit_costs)
+
+#                 for v in media_vars:
+#                     allocation_rows.append({
+#                         "Combination": combo_id,
+#                         "Variable": v,
+#                         "Spend": alloc_map[v],
+#                         "UnitCost": unit_costs.get(v, np.nan),
+#                         "Delta_X": res["per_var_dx"][v],
+#                         "Beta": _beta_for(row, v),
+#                         "Contribution": _beta_for(row, v) * res["per_var_dx"][v],
+#                     })
+
+#                 summary_rows.append({
+#                     "Combination": combo_id,
+#                     "Budget": total_budget,
+#                     "Baseline_Y": res["baseline_y"],
+#                     "Predicted_Y": res["predicted_y"],
+#                     "Lift_Y": res["lift_y"],
+#                     "Lift_per_$": (res["lift_y"] / total_budget) if total_budget else np.nan,
+#                 })
+
+#             alloc_df = pd.DataFrame(allocation_rows)
+#             summ_df = pd.DataFrame(summary_rows)
+#             st.session_state["optimizer_allocation"] = alloc_df
+#             st.session_state["optimizer_summary"] = summ_df
+
+#             st.success("Allocation evaluated using unit costs and model betas (linear response). IPOPT hook next.")
+#             st.subheader("Per-variable allocation breakdown")
+#             st.dataframe(alloc_df, use_container_width=True, hide_index=True)
+#             st.download_button("📥 Download Allocation Breakdown", data=alloc_df.to_csv(index=False).encode("utf-8"), file_name="allocation_breakdown.csv", mime="text/csv")
+
+#             st.subheader("Combination summary")
+#             st.dataframe(summ_df, use_container_width=True, hide_index=True)
+#             st.download_button("📥 Download Summary", data=summ_df.to_csv(index=False).encode("utf-8"), file_name="allocation_summary.csv", mime="text/csv")
+
+#     colA, colB = st.columns([1,4])
+#     with colA:
+#         if st.button("← Back to Home"):
+#             go("home")
+#     st.markdown("</div>", unsafe_allow_html=True)
+
+
+# # ──────────────────────────────────────────────────────────────────────────────
+# # HOME — Three Cards (Consolidator, Optimizer Configurer, Optimizer)
+# # ──────────────────────────────────────────────────────────────────────────────
 
 def home_cards():
     st.markdown("<div class='qm-hero'>QuantMatrix — Model & Optimizer Suite</div>", unsafe_allow_html=True)
@@ -1557,7 +1903,6 @@ def home_cards():
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
-        # Card content (text INSIDE the card)
         st.markdown(
             """
             <div class='qm-card qm-accent-yellow'>
@@ -1568,7 +1913,6 @@ def home_cards():
             """,
             unsafe_allow_html=True,
         )
-        # Button BELOW the card
         st.button("Open Consolidator", key="btn_cons", on_click=lambda: go("consolidator"))
 
     with c2:
@@ -1610,110 +1954,110 @@ def home_cards():
         )
         st.button("Open Marketing Inputs", key="btn_opt", on_click=lambda: go("optimizer"))
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SECTION 4 — CONTEXTUAL INPUTS
+# # ──────────────────────────────────────────────────────────────────────────────
+# # SECTION 4 — CONTEXTUAL INPUTS
 
-def show_contextual():
-    """Section 4 — Contextual Inputs (no budget). Set scenario values for non-media vars.
-    These levels contribute via beta * (x_scenario - mean). Defaults to mean.
-    """
-    def _beta_for(row: pd.Series, var: str) -> float:
-        for key in [f"Weighted_Beta_{var}", f"Selected_Beta_{var}", f"Beta_{var}"]:
-            if key in row and pd.notna(row[key]):
-                try:
-                    return float(row[key])
-                except Exception:
-                    pass
-        return 0.0
+# def show_contextual():
+#     """Section 4 — Contextual Inputs (no budget). Set scenario values for non-media vars.
+#     These levels contribute via beta * (x_scenario - mean). Defaults to mean.
+#     """
+#     def _beta_for(row: pd.Series, var: str) -> float:
+#         for key in [f"Weighted_Beta_{var}", f"Selected_Beta_{var}", f"Beta_{var}"]:
+#             if key in row and pd.notna(row[key]):
+#                 try:
+#                     return float(row[key])
+#                 except Exception:
+#                     pass
+#         return 0.0
 
-    def _mean_for(row: pd.Series, var: str) -> float:
-        for key in [f"Mean_{var}", f"Selected_Mean_{var}"]:
-            if key in row and pd.notna(row[key]):
-                try:
-                    return float(row[key])
-                except Exception:
-                    pass
-        return 0.0
+#     def _mean_for(row: pd.Series, var: str) -> float:
+#         for key in [f"Mean_{var}", f"Selected_Mean_{var}"]:
+#             if key in row and pd.notna(row[key]):
+#                 try:
+#                     return float(row[key])
+#                 except Exception:
+#                     pass
+#         return 0.0
 
-    def _intercept_for(row: pd.Series) -> float:
-        for key in ["Weighted_B0", "Selected_B0 (Original)", "Selected_B0", "B0 (Original)"]:
-            if key in row and pd.notna(row[key]):
-                try:
-                    return float(row[key])
-                except Exception:
-                    pass
-        return 0.0
+#     def _intercept_for(row: pd.Series) -> float:
+#         for key in ["Weighted_B0", "Selected_B0 (Original)", "Selected_B0", "B0 (Original)"]:
+#             if key in row and pd.notna(row[key]):
+#                 try:
+#                     return float(row[key])
+#                 except Exception:
+#                     pass
+#         return 0.0
 
-    st.markdown("<div class='qm-panel'>", unsafe_allow_html=True)
-    st.markdown("<span class='qm-eyebrow'>Section 4</span>", unsafe_allow_html=True)
-    st.markdown("<h2>Contextual Inputs</h2>", unsafe_allow_html=True)
-    st.caption("No budget here. Set levels for non-media variables. Saved levels feed into Marketing Inputs evaluation.")
+#     st.markdown("<div class='qm-panel'>", unsafe_allow_html=True)
+#     st.markdown("<span class='qm-eyebrow'>Section 4</span>", unsafe_allow_html=True)
+#     st.markdown("<h2>Contextual Inputs</h2>", unsafe_allow_html=True)
+#     st.caption("No budget here. Set levels for non-media variables. Saved levels feed into Marketing Inputs evaluation.")
 
-    saved_models = st.session_state.get("saved_models")
-    grouping_keys = st.session_state.get("grouping_keys", [])
-    other_vars = st.session_state.get("optimizer_other", [])
+#     saved_models = st.session_state.get("saved_models")
+#     grouping_keys = st.session_state.get("grouping_keys", [])
+#     other_vars = st.session_state.get("optimizer_other", [])
 
-    if saved_models is None or saved_models.empty:
-        st.warning("No consolidated models in session. Run Section 1 first.")
-        colA, _ = st.columns([1,4])
-        with colA:
-            if st.button("← Back to Home"):
-                go("home")
-        st.markdown("</div>", unsafe_allow_html=True)
-        return
+#     if saved_models is None or saved_models.empty:
+#         st.warning("No consolidated models in session. Run Section 1 first.")
+#         colA, _ = st.columns([1,4])
+#         with colA:
+#             if st.button("← Back to Home"):
+#                 go("home")
+#         st.markdown("</div>", unsafe_allow_html=True)
+#         return
 
-    if not grouping_keys:
-        blacklist_prefix = ("Weighted_", "Selected_", "Mean_", "Models_Used", "Best_", "Avg_", "Equation_Complete", "Y_Pred_")
-        grouping_keys = [c for c in saved_models.columns if not str(c).startswith(blacklist_prefix)][:3]
-    labels = [" | ".join([f"{k}:{saved_models.iloc[i][k]}" for k in grouping_keys]) for i in range(len(saved_models))]
+#     if not grouping_keys:
+#         blacklist_prefix = ("Weighted_", "Selected_", "Mean_", "Models_Used", "Best_", "Avg_", "Equation_Complete", "Y_Pred_")
+#         grouping_keys = [c for c in saved_models.columns if not str(c).startswith(blacklist_prefix)][:3]
+#     labels = [" | ".join([f"{k}:{saved_models.iloc[i][k]}" for k in grouping_keys]) for i in range(len(saved_models))]
 
-    st.markdown("### Choose Combination (for means)")
-    combo_idx = st.selectbox("Combination", options=list(range(len(saved_models))), format_func=lambda i: labels[i], key="combo_select_c")
-    row = saved_models.iloc[combo_idx]
+#     st.markdown("### Choose Combination (for means)")
+#     combo_idx = st.selectbox("Combination", options=list(range(len(saved_models))), format_func=lambda i: labels[i], key="combo_select_c")
+#     row = saved_models.iloc[combo_idx]
 
-    # Build editable grid for contextual levels
-    stored = st.session_state.get("contextual_levels", {})
-    data = []
-    for v in other_vars:
-        mean_x = _mean_for(row, v)
-        scenario = stored.get(v, mean_x)
-        data.append({"Variable": v, "Mean": mean_x, "Scenario": scenario, "Beta": _beta_for(row, v)})
-    grid = pd.DataFrame(data)
+#     # Build editable grid for contextual levels
+#     stored = st.session_state.get("contextual_levels", {})
+#     data = []
+#     for v in other_vars:
+#         mean_x = _mean_for(row, v)
+#         scenario = stored.get(v, mean_x)
+#         data.append({"Variable": v, "Mean": mean_x, "Scenario": scenario, "Beta": _beta_for(row, v)})
+#     grid = pd.DataFrame(data)
 
-    colcfg = {
-        "Variable": st.column_config.TextColumn(disabled=True),
-        "Mean": st.column_config.NumberColumn(format="%.4f", disabled=True),
-        "Scenario": st.column_config.NumberColumn(format="%.4f"),
-        "Beta": st.column_config.NumberColumn(format="%.6f", disabled=True),
-    }
-    grid = st.data_editor(grid, use_container_width=True, hide_index=True, column_config=colcfg, key=f"ctx_grid_{combo_idx}")
+#     colcfg = {
+#         "Variable": st.column_config.TextColumn(disabled=True),
+#         "Mean": st.column_config.NumberColumn(format="%.4f", disabled=True),
+#         "Scenario": st.column_config.NumberColumn(format="%.4f"),
+#         "Beta": st.column_config.NumberColumn(format="%.6f", disabled=True),
+#     }
+#     grid = st.data_editor(grid, use_container_width=True, hide_index=True, column_config=colcfg, key=f"ctx_grid_{combo_idx}")
 
-    # Actions
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if st.button("Reset to Mean"):
-            for i in range(len(grid)):
-                grid.at[i, "Scenario"] = grid.at[i, "Mean"]
-    with c2:
-        if st.button("Save Levels"):
-            st.session_state["contextual_levels"] = {str(r["Variable"]): float(r["Scenario"]) for _, r in grid.iterrows()}
-            st.success("Saved contextual levels.")
-    with c3:
-        if st.button("Go to Marketing Inputs →"):
-            go("optimizer")
+#     # Actions
+#     c1, c2, c3 = st.columns(3)
+#     with c1:
+#         if st.button("Reset to Mean"):
+#             for i in range(len(grid)):
+#                 grid.at[i, "Scenario"] = grid.at[i, "Mean"]
+#     with c2:
+#         if st.button("Save Levels"):
+#             st.session_state["contextual_levels"] = {str(r["Variable"]): float(r["Scenario"]) for _, r in grid.iterrows()}
+#             st.success("Saved contextual levels.")
+#     with c3:
+#         if st.button("Go to Marketing Inputs →"):
+#             go("optimizer")
 
-    # Quick evaluation (contextual only)
-    b0 = _intercept_for(row)
-    baseline = b0 + sum(_beta_for(row, r["Variable"]) * r["Mean"] for _, r in grid.iterrows())
-    predicted_ctx = b0 + sum(_beta_for(row, r["Variable"]) * r["Scenario"] for _, r in grid.iterrows())
-    st.metric("Contextual-only Δ", f"{(predicted_ctx - baseline):,.2f}")
+#     # Quick evaluation (contextual only)
+#     b0 = _intercept_for(row)
+#     baseline = b0 + sum(_beta_for(row, r["Variable"]) * r["Mean"] for _, r in grid.iterrows())
+#     predicted_ctx = b0 + sum(_beta_for(row, r["Variable"]) * r["Scenario"] for _, r in grid.iterrows())
+#     st.metric("Contextual-only Δ", f"{(predicted_ctx - baseline):,.2f}")
 
-    # Nav
-    colA, _ = st.columns([1,4])
-    with colA:
-        if st.button("← Back to Home"):
-            go("home")
-    st.markdown("</div>", unsafe_allow_html=True)
+#     # Nav
+#     colA, _ = st.columns([1,4])
+#     with colA:
+#         if st.button("← Back to Home"):
+#             go("home")
+#     st.markdown("</div>", unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ROUTER
@@ -1723,11 +2067,11 @@ elif st.session_state.section == "consolidator":
     show_consolidator()
 elif st.session_state.section == "insights":
     show_insights()
-elif st.session_state.section == "optimizer_config":
-    show_optimizer_config()
-elif st.session_state.section == "optimizer":
-    show_optimizer()
-elif st.session_state.section == "contextual":
-    show_contextual()
+# elif st.session_state.section == "optimizer_config":
+#     show_optimizer_config()
+# elif st.session_state.section == "optimizer":
+#     show_optimizer()
+# elif st.session_state.section == "contextual":
+#     show_contextual()
 else:
     home_cards()
