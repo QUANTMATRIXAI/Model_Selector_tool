@@ -1,3 +1,6 @@
+from pathlib import Path
+import html
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -76,6 +79,80 @@ st.markdown(
       /* Tiny label */
       .qm-label { font-size: 12px; color: var(--qm-muted); }
 
+      /* Journeys timeline */
+      .journey-shell {
+        background: var(--qm-white);
+        border: 1px solid var(--qm-border);
+        border-radius: 18px;
+        padding: 18px 20px;
+        box-shadow: 0 5px 16px rgba(0,0,0,0.04);
+        margin-top: 12px;
+      }
+      .journey-header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px 18px;
+        margin-bottom: 14px;
+        align-items: center;
+      }
+      .journey-pill {
+        background: var(--qm-soft);
+        color: #8c5b00;
+        padding: 4px 12px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .journey-timeline {
+        margin-top: 6px;
+      }
+      .journey-step {
+        display: grid;
+        grid-template-columns: 58px 1fr;
+        column-gap: 16px;
+        padding: 14px 0;
+        border-bottom: 1px solid var(--qm-border);
+      }
+      .journey-step:last-child { border-bottom: none; }
+      .journey-seq {
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--qm-primary);
+      }
+      .journey-main {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .journey-event {
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--qm-text);
+      }
+      .journey-page {
+        font-size: 13px;
+        color: var(--qm-muted);
+        word-break: break-word;
+      }
+      .journey-meta {
+        font-size: 12px;
+        color: var(--qm-muted);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 16px;
+      }
+      .journey-meta span {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .journey-meta strong { color: var(--qm-text); }
+      .journey-empty {
+        font-size: 14px;
+        color: var(--qm-muted);
+        padding: 14px 0;
+      }
+
       /* Divider */
       hr.qm { border: 0; border-top: 1px solid var(--qm-border); margin: 10px 0 20px; }
     </style>
@@ -90,6 +167,7 @@ SECTIONS = {
     "home": "Home",
     "consolidator": "Model Consolidator",
     "insights": "Insights",
+    "journeys": "Journeys",
     "optimizer_config": "Optimizer Configurer",
     "optimizer": "Marketing Inputs",
     "contextual": "Contextual Inputs",
@@ -97,6 +175,123 @@ SECTIONS = {
 
 if "section" not in st.session_state:
     st.session_state.section = "home"
+
+JOURNEYS_FILE = Path(__file__).with_name("TW Attribution_Logic Verification_Table (1).csv")
+
+
+def _clean_text_series(series: pd.Series) -> pd.Series:
+    s = series.astype(str)
+    for token in (" ", " ", "﻿"):
+        s = s.str.replace(token, " ", regex=False)
+    s = s.str.replace("Â", "", regex=False).str.strip()
+    s = s.replace({"": np.nan, "nan": np.nan, "NaN": np.nan, "NULL": np.nan, "null": np.nan, "None": np.nan, "NONE": np.nan, "NaT": np.nan})
+    return s
+
+
+def _first_valid_value(series: pd.Series):
+    for val in series:
+        if pd.notna(val) and str(val).strip():
+            return val
+    return None
+
+
+def _format_timedelta(td: pd.Timedelta | None) -> str:
+    if td is None or pd.isna(td):
+        return "--"
+    total_seconds = int(td.total_seconds())
+    if total_seconds <= 0:
+        return "0s"
+    days, rem = divmod(total_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if seconds and not parts:
+        parts.append(f"{seconds}s")
+    return " ".join(parts) if parts else "0s"
+
+
+@st.cache_data(show_spinner=False)
+
+def load_journey_data(path: str) -> pd.DataFrame:
+    path_obj = Path(path)
+    if not path_obj.exists():
+        return pd.DataFrame(columns=[
+            "journey_name", "event_sequence", "event_timestamp", "event_type",
+            "page_location", "purchase_timestamp", "source", "ad_name",
+            "event_time", "purchase_time", "event_type_norm"
+        ])
+
+    df = pd.read_csv(path_obj)
+    df.columns = [c.strip() for c in df.columns]
+    rename_map = {
+        "JourneyName": "journey_name",
+        "event_sequence": "event_sequence",
+        "event_timestamp": "event_timestamp",
+        "event_type": "event_type",
+        "page_location": "page_location",
+        "purchase_timestamp": "purchase_timestamp",
+        "source": "source",
+        "ad_name": "ad_name",
+    }
+    df = df.rename(columns=rename_map)
+
+    text_cols = ["journey_name", "event_timestamp", "event_type", "page_location", "purchase_timestamp", "source", "ad_name"]
+    for col in text_cols:
+        if col in df.columns:
+            df[col] = _clean_text_series(df[col])
+
+    if "event_sequence" in df.columns:
+        df["event_sequence"] = pd.to_numeric(df["event_sequence"], errors="coerce")
+    else:
+        df["event_sequence"] = np.nan
+
+    df = df.dropna(subset=["journey_name", "event_sequence"]).copy()
+    df["journey_name"] = df["journey_name"].astype(str)
+    df["event_sequence"] = df["event_sequence"].astype(int)
+
+    if "event_type" in df.columns:
+        df["event_type_norm"] = df["event_type"].fillna("").str.strip().str.lower()
+    else:
+        df["event_type_norm"] = ""
+
+    if "event_timestamp" in df.columns:
+        df["event_time"] = pd.to_datetime(df["event_timestamp"], errors="coerce")
+    else:
+        df["event_time"] = pd.NaT
+
+    if "purchase_timestamp" in df.columns:
+        df["purchase_time"] = pd.to_datetime(df["purchase_timestamp"], errors="coerce")
+    else:
+        df["purchase_time"] = pd.NaT
+
+    if "ad_name" in df.columns:
+        has_valid_ad = df.groupby("journey_name")["ad_name"].transform(lambda s: s.notna().any())
+        df = df[has_valid_ad]
+    else:
+        return df.iloc[0:0]
+
+    df = df.sort_values(["journey_name", "event_sequence", "event_time"]).reset_index(drop=True)
+
+    purchase_seq = (
+        df[df["event_type_norm"] == "purchase"]
+        .groupby("journey_name")["event_sequence"]
+        .min()
+    )
+    if not purchase_seq.empty:
+        df = df.merge(purchase_seq.rename("purchase_limit"), on="journey_name", how="left")
+        df = df[(df["purchase_limit"].isna()) | (df["event_sequence"] <= df["purchase_limit"])].copy()
+        df = df.drop(columns=["purchase_limit"])
+
+    return df
+
+
+
 
 
 def go(to: str):
@@ -856,7 +1051,7 @@ def show_insights():
         dim_cols = dimension_cols_all
         # Prefer Brand if present; else fall back to full combo label
         if "Brand" in saved_models.columns:
-            combo_labels = saved_models["Brand"].astype(str).fillna("—")
+            combo_labels = saved_models["Brand"].astype(str).fillna("--")
         else:
             combo_labels = saved_models[dim_cols].astype(str).apply(
                 lambda r: " | ".join([f"{c}:{r[c]}" for c in dim_cols]), axis=1
@@ -1061,7 +1256,7 @@ def show_insights():
             s = re.sub(r"\s+", " ", s).strip()
             return s[:48] + ("…" if len(s) > 48 else "")
 
-        st.markdown("### Portfolio — Contribution from Σ(β×x)")
+        st.markdown("### Portfolio — Contribution")
 
         # 0) Source DF holding all combinations (products/brands)
         if "saved_models" not in st.session_state or st.session_state["saved_models"] is None or st.session_state["saved_models"].empty:
@@ -1495,7 +1690,1105 @@ def show_insights():
             if st.button("Go to Contextual Inputs →", key="btn_go_context", type="secondary"):
                 go("contextual")
 
+
+
+    colA, colB = st.columns([1,4])
+    with colA:
+        if st.button("← Back to Home"):
+            go("home")
     st.markdown("</div>", unsafe_allow_html=True)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Journeys · TripleWhale Paths
+#  - Purchase item from sales_file.csv (Order name == journey_name)
+#  - Ad → Product mapping from product_title_mapped.xlsx (shown inline beside ad badge)
+#  - Right-side compact filters; left big scrollable timeline; purchase anchored
+# ──────────────────────────────────────────────────────────────────────────────
+from pathlib import Path
+from datetime import date, timedelta
+import pandas as pd
+import streamlit as st
+import html
+import re
+
+# Files (same folder as app.py)
+SALES_FILE = Path(__file__).with_name("sales_file.csv")
+AD_PRODUCT_MAP_FILE = Path(__file__).with_name("product_title_mapped.xlsx")
+
+# ------------------------------- helpers -------------------------------------
+def _first_valid_value(s: pd.Series):
+    for v in s:
+        if pd.notna(v) and str(v).strip():
+            return v
+    return pd.NA
+
+def _format_timedelta(td) -> str:
+    if pd.isna(td):
+        return "--"
+    secs = int(td.total_seconds())
+    if secs < 60: return f"{secs}s"
+    mins, s = divmod(secs, 60)
+    if mins < 60: return f"{mins}m {s}s"
+    hrs, m = divmod(mins, 60)
+    if hrs < 24: return f"{hrs}h {m}m"
+    days, h = divmod(hrs, 24)
+    return f"{days}d {h}h"
+
+def _shorten(x: object, limit: int = 48) -> str:
+    if not isinstance(x, str): return ""
+    t = x.strip()
+    return t if len(t) <= limit else t[: max(1, limit - 3)] + "..."
+
+def _nullish(x) -> bool:
+    if x is None or (isinstance(x, float) and pd.isna(x)): return True
+    s = str(x).strip().lower()
+    return s in ("", "none", "null", "nan", "na", "n/a")
+
+def _first_of_month(d: date) -> date:
+    return date(d.year, d.month, 1)
+
+def _prev_month_range(anchor: date):
+    if anchor.month == 1:
+        start = date(anchor.year - 1, 12, 1)
+    else:
+        start = date(anchor.year, anchor.month - 1, 1)
+    end = _first_of_month(anchor) - timedelta(days=1)
+    return start, end
+
+# -------------------------- sales_file.csv → purchase -------------------------
+def load_sales_mapping(file_path: Path) -> pd.DataFrame:
+    """
+    sales_file.csv columns (min): 'Order name', 'Product title'
+    Return: ['journey_name','product_title'] (first non-blank per order)
+    """
+    if not file_path.exists():
+        return pd.DataFrame(columns=["journey_name", "product_title"])
+    df = pd.read_csv(file_path, dtype=str)
+    cols = {c.strip().lower(): c for c in df.columns}
+
+    def pick(*names):
+        for nm in names:
+            if nm.lower() in cols: return cols[nm.lower()]
+        return None
+
+    c_order = pick("order name", "order_name", "journey name", "journey_name")
+    c_prod  = pick("product title", "product", "title")
+    if c_order is None or c_prod is None:
+        return pd.DataFrame(columns=["journey_name", "product_title"])
+
+    df["journey_name"]  = df[c_order].astype(str).str.strip()
+    df["product_title"] = df[c_prod].astype(str).str.strip()
+    bad = df["product_title"].str.lower().isin(["", "nan", "none", "null", "na", "n/a"])
+    df = df[~bad].copy()
+    return (df.groupby("journey_name", as_index=False)
+              .agg(product_title=("product_title", "first")))
+
+# ---------------- product_title_mapped.xlsx → ad_name → mapped product --------
+def load_ad_product_map(file_path: Path) -> pd.DataFrame:
+    """
+    product_title_mapped.xlsx columns: 'Ad name', 'Product title'
+    Return: ['ad_name','ad_product'] cleaned.
+    """
+    if not file_path.exists():
+        return pd.DataFrame(columns=["ad_name", "ad_product"])
+    df = pd.read_excel(file_path, dtype=str)
+    df = df.rename(columns={c: c.strip().lower() for c in df.columns})
+    if "ad name" not in df.columns or "product title" not in df.columns:
+        return pd.DataFrame(columns=["ad_name", "ad_product"])
+    df = df.rename(columns={"ad name": "ad_name", "product title": "ad_product"})
+    df["ad_name"] = df["ad_name"].astype(str).str.strip()
+    df["ad_product"] = df["ad_product"].astype(str).str.strip()
+    df = df[(df["ad_name"] != "") & (df["ad_product"] != "")]
+    df = df.drop_duplicates(subset=["ad_name"], keep="first").reset_index(drop=True)
+    return df[["ad_name", "ad_product"]]
+
+def ad_to_product(ad_name: str, ad_map_df: pd.DataFrame) -> str:
+    """Exact, then _V# strip, then CAT-Conversion fallback, then prefix match."""
+    if not isinstance(ad_name, str) or not ad_name.strip(): return ""
+    candidate = ad_name.strip()
+
+    # 1) exact
+    row = ad_map_df.loc[ad_map_df["ad_name"] == candidate]
+    if not row.empty: return str(row.iloc[0]["ad_product"]).strip()
+
+    # 2) strip version suffix _V1/_V10
+    m = re.match(r"^(.*)_V\d{1,2}$", candidate)
+    if m:
+        base = m.group(1)
+        row2 = ad_map_df.loc[ad_map_df["ad_name"] == base]
+        if not row2.empty: return str(row2.iloc[0]["ad_product"]).strip()
+
+    # 3) CAT conversion families → Category Ad
+    low = candidate.lower()
+    if ("cat" in low and "conversion" in low) or ("segmented_cat_conversion" in low):
+        return "Category Ad"
+
+    # 4) prefix fallback
+    starts = ad_map_df.loc[ad_map_df["ad_name"].apply(lambda x: candidate.startswith(str(x)))]
+    if not starts.empty: return str(starts.iloc[0]["ad_product"]).strip()
+
+    return ""
+
+# --------------------------- date & repeats UI --------------------------------
+def _data_presets_ui(min_date: date, max_date: date):
+    anchor = max_date
+    this_month = _first_of_month(anchor)
+    last_m_start, last_m_end = _prev_month_range(anchor)
+    preset = st.selectbox(
+        "Date range (by purchase date in data)",
+        ["Last 7 days","Last 30 days","Today (data)","Yesterday (data)",
+         "This month (data)","Last month (data)","Custom range","All data"],
+        index=0, key="jr_date_preset",
+    )
+    if preset == "Today (data)":
+        start_d, end_d = anchor, anchor
+    elif preset == "Yesterday (data)":
+        start_d = anchor - timedelta(days=1); end_d = start_d
+    elif preset == "Last 7 days":
+        start_d = anchor - timedelta(days=6); end_d = anchor
+    elif preset == "Last 30 days":
+        start_d = anchor - timedelta(days=29); end_d = anchor
+    elif preset == "This month (data)":
+        start_d, end_d = this_month, anchor
+    elif preset == "Last month (data)":
+        start_d, end_d = last_m_start, last_m_end
+    elif preset == "Custom range":
+        default_start = max(anchor - timedelta(days=6), min_date)
+        default_end   = anchor
+        dr = st.date_input("Pick a date range (from data)",
+                           value=(default_start, default_end),
+                           min_value=min_date, max_value=max_date,
+                           key="jr_custom_range")
+        if isinstance(dr, tuple) and len(dr) == 2:
+            start_d, end_d = dr[0], dr[1]
+        else:
+            start_d, end_d = default_start, default_end
+    else:
+        return None, None, "All data"
+    start_d = max(start_d, min_date); end_d = min(end_d, max_date)
+    return start_d, end_d, preset
+
+def _repeat_threshold_ui():
+    hide_rr = st.checkbox("Hide rapid repeats", value=True, key="jr_hide_rr")
+    choice = st.selectbox("Repeat threshold",
+                          ["60 sec","30 sec","2 min","5 min","Custom (seconds)"],
+                          index=0, key="jr_rr_choice")
+    if choice == "30 sec": secs = 30
+    elif choice == "60 sec": secs = 60
+    elif choice == "2 min": secs = 120
+    elif choice == "5 min": secs = 300
+    else:
+        secs = int(st.number_input("Custom seconds", min_value=1, value=60, step=1, key="jr_rr_custom"))
+    return hide_rr, secs
+
+# ---------------------------------- MAIN --------------------------------------
+def show_journeys():
+    st.markdown("<div class='qm-panel'>", unsafe_allow_html=True)
+    st.markdown("<span class='qm-eyebrow'>Section 3</span>", unsafe_allow_html=True)
+    st.markdown("<h2 class='title-h2'>Journeys &#183; TripleWhale Paths</h2>", unsafe_allow_html=True)
+
+    # Load data
+    data_path = JOURNEYS_FILE
+    if not data_path.exists():
+        st.error(f"Could not find '{data_path.name}'. Place the TripleWhale export alongside app.py.")
+        st.markdown("</div>", unsafe_allow_html=True); return
+    try:
+        journeys_df = load_journey_data(str(data_path))
+    except Exception as exc:
+        st.error(f"Could not load journeys: {exc}")
+        st.markdown("</div>", unsafe_allow_html=True); return
+    if journeys_df.empty:
+        st.info("No journeys remain after loading."); st.markdown("</div>", unsafe_allow_html=True); return
+
+    # Types
+    if not pd.api.types.is_datetime64_any_dtype(journeys_df["event_time"]):
+        journeys_df["event_time"] = pd.to_datetime(journeys_df["event_time"], errors="coerce")
+    et_col = "event_type_norm" if "event_type_norm" in journeys_df.columns else "event_type"
+    journeys_df[et_col] = journeys_df[et_col].fillna("").astype(str)
+
+    # Anchor by first purchase
+    is_purchase_full = journeys_df[et_col].str.lower().eq("purchase")
+    purchase_times_full = (journeys_df.loc[is_purchase_full]
+                           .groupby("journey_name")["event_time"].min()
+                           .rename("first_purchase_time"))
+    if purchase_times_full.empty:
+        st.info("No purchase-anchored journeys found."); st.markdown("</div>", unsafe_allow_html=True); return
+    min_d, max_d = purchase_times_full.min().date(), purchase_times_full.max().date()
+
+    # Layout
+    left, right = st.columns([2.4, 1.0], gap="large")
+    with right:
+        st.markdown("""
+        <style>
+          .filter-card { padding:14px; border:1px solid #e8ecf2; border-radius:14px; background:#fbfcff; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+          .tiny-note { color:#6b7b8f; font-size:.82rem; margin-top:4px; }
+        </style>
+        """, unsafe_allow_html=True)
+        st.markdown("<div class='filter-card'>", unsafe_allow_html=True)
+        st.markdown("#### Filters", unsafe_allow_html=True)
+        st.markdown("**Date range**")
+        start_date, end_date, preset = _data_presets_ui(min_d, max_d)
+        st.markdown("**Rapid repeats**")
+        hide_rr, rr_seconds = _repeat_threshold_ui()
+        st.markdown("<div class='tiny-note'>Removes steps closer than the threshold to the previous step (keeps earlier; Purchase always kept).</div>", unsafe_allow_html=True)
+
+    # Apply date range (by first purchase)
+    if start_date and end_date:
+        keep = purchase_times_full[(purchase_times_full >= pd.Timestamp(start_date)) &
+                                   (purchase_times_full <= pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1))]
+    else:
+        keep = purchase_times_full
+    if keep.empty:
+        with left: st.info(f"No journeys with a purchase in the selected range ({preset}).")
+        st.markdown("</div>", unsafe_allow_html=True); return
+
+    # Trim to first purchase
+    journeys_df = journeys_df.merge(keep.rename("first_purchase_time"), on="journey_name", how="inner")
+    journeys_df = journeys_df[journeys_df["event_time"] <= journeys_df["first_purchase_time"]].copy()
+
+    # Rule: non-purchase must have ad_name
+    ad_ok = ~journeys_df["ad_name"].map(_nullish) if "ad_name" in journeys_df.columns else pd.Series(False, index=journeys_df.index)
+    is_purchase_now = journeys_df[et_col].str.lower().eq("purchase")
+    journeys_df = journeys_df[is_purchase_now | ad_ok].copy()
+
+    # Ensure at least one non-purchase row per journey
+    nonp_counts = (journeys_df.loc[~is_purchase_now].groupby("journey_name").size().rename("np_rows"))
+    journeys_df = journeys_df.merge(nonp_counts, on="journey_name", how="left")
+    journeys_df = journeys_df[journeys_df["np_rows"].fillna(0) > 0].copy()
+    if journeys_df.empty:
+        with left: st.info("No journeys remain after applying ad-name rule and date range.")
+        st.markdown("</div>", unsafe_allow_html=True); return
+
+    # Attach purchase product (sales_file.csv)
+    sales_map = load_sales_mapping(SALES_FILE)
+    if not sales_map.empty:
+        journeys_df = journeys_df.merge(sales_map, on="journey_name", how="left")
+    else:
+        journeys_df["product_title"] = ""
+
+    # Attach ad→product mapping for non-purchase steps
+    ad_map_df = load_ad_product_map(AD_PRODUCT_MAP_FILE)
+    if ad_map_df.empty:
+        journeys_df["ad_product"] = ""
+    else:
+        journeys_df["ad_product"] = journeys_df["ad_name"].apply(lambda x: ad_to_product(x, ad_map_df))
+
+    # Sort
+    journeys_df = journeys_df.sort_values(["journey_name","event_time","event_sequence"]).reset_index(drop=True)
+
+    # Summary
+    summary_df = (journeys_df.groupby("journey_name")
+                  .agg(steps=("event_sequence","count"),
+                       first_event=("event_time","min"),
+                       last_event=("event_time","max"),
+                       purchase_time=("first_purchase_time","first"))
+                  .reset_index())
+    ad_np = (journeys_df.loc[journeys_df[et_col].str.lower().ne("purchase")]
+             .groupby("journey_name")["ad_name"].agg(_first_valid_value).rename("ad_name_np"))
+    summary_df = summary_df.merge(ad_np, on="journey_name", how="left")
+    if "source" in journeys_df.columns:
+        summary_df = summary_df.merge(
+            journeys_df.groupby("journey_name")["source"].agg(_first_valid_value).rename("source"),
+            on="journey_name", how="left",
+        )
+    summary_df["journey_span"] = summary_df["last_event"] - summary_df["first_event"]
+    summary_df = summary_df.sort_values(["purchase_time","first_event"], ascending=[False,False]).reset_index(drop=True)
+
+    st.caption(f"{len(summary_df)} journeys (purchase in {preset}). Non-purchase steps require Ad Name; Purchase may not. "
+               "Purchase shows Item from sales_file.csv. Non-purchase shows Ad + mapped Product.")
+
+    # Purchase product options (for filter)
+    purchase_titles = (journeys_df.loc[journeys_df[et_col].str.lower().eq("purchase"), "product_title"]
+                       .dropna().astype(str).str.strip())
+    product_options = sorted({t for t in purchase_titles if t})
+
+    # Right: refine
+    with right:
+        st.markdown("**Refine**")
+        if product_options:
+            product_filter = st.multiselect("Product title (Item)", product_options, key="jr_product_filter")
+        else:
+            product_filter = []
+            st.caption("No product titles found in the selected date range.")
+        source_filter = None
+        if "source" in summary_df.columns:
+            source_options = sorted({str(s).strip() for s in summary_df["source"].dropna() if str(s).strip()})
+            source_filter = st.multiselect("Source", source_options, key="journeys_filter_source")
+
+    # Apply list filters
+    filtered_df = summary_df.copy()
+    if product_filter:
+        jp = (journeys_df.loc[journeys_df[et_col].str.lower().eq("purchase"), ["journey_name","product_title"]]
+              .dropna())
+        jp["product_title"] = jp["product_title"].astype(str).str.strip()
+        allowed = set(jp[jp["product_title"].isin(product_filter)]["journey_name"].unique())
+        filtered_df = filtered_df[filtered_df["journey_name"].isin(allowed)]
+    if source_filter:
+        filtered_df = filtered_df[filtered_df["source"].isin(source_filter)]
+    if filtered_df.empty:
+        with left:
+            st.info("No journeys match the current filters.")
+        st.markdown("</div>", unsafe_allow_html=True); return
+
+    # Journey dropdown (post-filters)
+    label_map = {}
+    for row in filtered_df.itertuples():
+        pieces = [row.journey_name]
+        if "source" in filtered_df.columns and isinstance(row.source, str) and row.source.strip():
+            pieces.append(_shorten(row.source, 36))
+        ad_label = _shorten(row.ad_name_np, 48) if isinstance(row.ad_name_np, str) else ""
+        if ad_label: pieces.append(ad_label)
+        pieces.append(f"{int(row.steps)} steps")
+        label_map[row.journey_name] = " | ".join([p for p in pieces if p])
+
+    options = filtered_df["journey_name"].tolist()
+    prev_choice = st.session_state.get("journeys_selected")
+    default_index = options.index(prev_choice) if prev_choice in options else 0
+    with right:
+        selected_journey = st.selectbox("Journey", options, index=default_index,
+                                        format_func=lambda j: label_map.get(j, j),
+                                        key="journeys_selected")
+        st.markdown("</div>", unsafe_allow_html=True)  # close filter-card
+
+    # --------------------------- LEFT: render timeline -------------------------
+    with left:
+        st.markdown("""
+        <style>
+          .journey-hero { display:flex; align-items:center; gap:14px; margin:6px 0 10px 0; }
+          .ad-hero { font-weight:800; font-size:1.06rem; padding:8px 12px; border-radius:16px;
+                     border:1px solid rgba(0,0,0,0.06); background:linear-gradient(180deg,#fff,#fafafa);
+                     box-shadow:0 1px 2px rgba(0,0,0,0.06); }
+          .hero-pills { display:flex; gap:8px; flex-wrap:wrap; }
+          .hero-pill { font-size:.86rem; padding:5px 12px; border-radius:999px; background:#f5f7fa; border:1px solid #edf0f3; }
+          .journey-scroll { max-height:640px; overflow-y:auto; padding:10px 10px; background:#fff;
+                            border:1px solid #e8ecf2; border-radius:14px; box-shadow:inset 0 1px 3px rgba(0,0,0,.05); }
+          .journey-step { display:grid; grid-template-columns: 52px 1fr; gap:12px; padding:10px; margin:8px 0;
+                          background:#ffffff; border:1px solid #eef1f6; border-radius:12px; box-shadow:0 1px 2px rgba(0,0,0,0.04); }
+          .journey-seq { display:flex; align-items:center; justify-content:center; width:44px; height:44px; border-radius:12px;
+                         background:#f7f9fc; font-weight:700; font-size:.95rem; border:1px solid #eef1f6; }
+          .journey-eventline { display:flex; align-items:center; gap:8px; }
+          .journey-event { font-weight:800; }
+          .ad-badge { margin-left:auto; font-weight:800; padding:4px 10px; border-radius:10px; background:#fff5e6; border:1px solid #ffe2b8; }
+          .inline-chip { margin-left: 8px; }   /* NEW: place mapped product inline with ad badge */
+          .journey-page { color:#52637a; font-size:.94rem; margin:2px 0 2px 26px; }
+          .journey-meta { color:#66798f; font-size:.86rem; display:flex; gap:12px; margin-left:26px; }
+          .journey-empty { opacity:.55; }
+          .prod-box { margin:6px 0 0 26px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+          .prod-chip { font-size:.86rem; padding:4px 10px; border:1px solid #e7eaf0; background:#fbfcfe; border-radius:999px; }
+          .prod-chip-ad { font-size:.82rem; padding:3px 8px; border:1px solid #eddff3; background:#faf5ff; border-radius:999px; }
+          .ev-view .journey-seq { background:#f2f7ff; }
+          .ev-click .journey-seq { background:#f6f3ff; }
+          .ev-cart .journey-seq { background:#fff6f0; }
+          .ev-checkout .journey-seq { background:#f1fff4; }
+          .ev-purchase { border:1px solid #d2f5e5; background:#f7fffb; }
+          .ev-purchase .journey-seq { background:#f0fff8; border:1px solid #d2f5e5; }
+        </style>
+        """, unsafe_allow_html=True)
+
+        # Header chips
+        sr = summary_df[summary_df["journey_name"] == selected_journey].iloc[0]
+        ad_hero = html.escape(_shorten(sr.ad_name_np, 80) or "--")
+        steps_label = f'{int(sr.steps)} steps'
+        span_label = _format_timedelta(sr["last_event"] - sr["first_event"])
+        st.markdown(
+            f"<div class='journey-hero'>"
+            f"<div class='ad-hero'>Ad • <span>{ad_hero}</span></div>"
+            f"<div class='hero-pills'><div class='hero-pill'>Journey Span: {html.escape(span_label)}</div>"
+            f"<div class='hero-pill'>{html.escape(steps_label)}</div></div></div>",
+            unsafe_allow_html=True,
+        )
+
+        # Build timeline (chronological to purchase, then render purchase on top)
+        base = journeys_df[journeys_df["journey_name"] == selected_journey].copy().reset_index(drop=True)
+        p_mask = base[et_col].str.lower().eq("purchase"); fp_idx = base.index[p_mask][0]
+        base = base.loc[:fp_idx].copy()
+
+        if hide_rr and rr_seconds > 0:
+            base["delta_prev_chrono"] = base["event_time"].diff()
+            keep_bursts = ((base.index == 0) |
+                           (base[et_col].str.lower().eq("purchase")) |
+                           (base["delta_prev_chrono"].isna()) |
+                           (base["delta_prev_chrono"] >= pd.Timedelta(seconds=int(rr_seconds))))
+            base = base[keep_bursts].copy().reset_index(drop=True)
+
+        p_mask2 = base[et_col].str.lower().eq("purchase"); fp_idx2 = base.index[p_mask2][0]
+        prior = base.iloc[:fp_idx2] if fp_idx2 > 0 else base.iloc[0:0]
+        journey_df = pd.concat([base.iloc[[fp_idx2]], prior.iloc[::-1]], ignore_index=True)
+
+        # Display fields
+        def _disp(s): return s.strip() if isinstance(s, str) and s.strip() else "--"
+        journey_df["event_display"] = (journey_df["event_type"] if "event_type" in journey_df else journey_df[et_col]).apply(_disp)
+        journey_df["page_display"]  = journey_df.get("page_location", pd.Series([""]*len(journey_df))).apply(_disp)
+        if pd.api.types.is_datetime64_any_dtype(journey_df["event_time"]):
+            journey_df["event_time_display"] = journey_df["event_time"].dt.strftime("%b %d, %Y - %I:%M:%S %p")
+        else:
+            journey_df["event_time_display"] = journey_df.get("event_timestamp", pd.Series(["--"]*len(journey_df))).apply(_disp)
+        journey_df["delta_prev"] = journey_df["event_time"] - journey_df["event_time"].shift(1)
+        journey_df.loc[0,"delta_prev"] = pd.Timedelta(0)
+        journey_df["delta_prev_label"] = journey_df["delta_prev"].abs().apply(_format_timedelta)
+        journey_df["source_display"] = journeys_df.get("source", pd.Series([""]*len(journey_df))).apply(lambda x: _shorten(x, 32))
+        journey_df["ad_display"] = journey_df["ad_name"].apply(lambda x: _shorten(x, 48) if isinstance(x, str) and x.strip() else "")
+        journey_df["ad_product_display"] = journey_df["ad_product"].apply(lambda x: _shorten(x, 60) if isinstance(x, str) and x.strip() else "")
+
+        def _etype_class_and_icon(s: str):
+            s = (s or "").lower()
+            if "purchase" in s: return "ev-purchase","🛍️"
+            if "add_to_cart" in s or "addtocart" in s or "cart" in s: return "ev-cart","🛒"
+            if "checkout" in s or "begin_checkout" in s: return "ev-checkout","💳"
+            if "click" in s or "ad_click" in s: return "ev-click","🖱️"
+            if "search" in s: return "ev-search","🔎"
+            if "view" in s or "page_view" in s or "view_content" in s or "view_item" in s: return "ev-view","👀"
+            return "ev-other","•"
+        journey_df["etype_class"], journey_df["etype_icon"] = zip(*journey_df[et_col].apply(_etype_class_and_icon))
+
+        # Render
+        tl = ["<div class='journey-scroll'>"]
+        for row in journey_df.itertuples(index=False):
+            seq_label  = html.escape(str(row.event_sequence)) if pd.notna(row.event_sequence) else "--"
+            event_label = html.escape(row.event_display) if isinstance(row.event_display, str) else "--"
+            page_label  = html.escape(row.page_display) if isinstance(row.page_display, str) else "--"
+            meta_bits = []
+            if row.event_time_display and row.event_time_display != "--":
+                meta_bits.append(f"<span><strong>{html.escape(row.event_time_display)}</strong></span>")
+            if row.delta_prev_label not in ("--","0s"):
+                meta_bits.append(f"<span>+{html.escape(row.delta_prev_label)} since prior</span>")
+            if isinstance(row.source_display, str) and row.source_display.strip():
+                meta_bits.append(f"<span>{html.escape(row.source_display)}</span>")
+            meta_html = "".join(meta_bits) if meta_bits else "<span class='journey-empty'>No metadata</span>"
+
+            # --- INLINE ad badge + mapped product (non-purchase only) ---
+            show_ad = ("purchase" not in (row.event_display or "").lower()) and isinstance(row.ad_display, str) and row.ad_display.strip()
+            ad_html = f"<span class='ad-badge'><strong>{html.escape(row.ad_display)}</strong></span>" if show_ad else ""
+            ad_prod_inline = ""
+            if show_ad and isinstance(row.ad_product_display, str) and row.ad_product_display.strip():
+                ad_prod_inline = f"<span class='prod-chip-ad inline-chip'>{html.escape(row.ad_product_display)}</span>"
+
+            # Purchase item chip
+            purchase_item_html = ""
+            if "purchase" in (row.event_display or "").lower():
+                title = getattr(row, "product_title", "")
+                title = title.strip() if isinstance(title, str) else ""
+                if title:
+                    purchase_item_html = f"<div class='prod-box'>🧾 Item: <span class='prod-chip'>{html.escape(title)}</span></div>"
+
+            tl.append(
+                f"<div class='journey-step {row.etype_class}'>"
+                f"  <div class='journey-seq'>{seq_label}</div>"
+                f"  <div>"
+                f"    <div class='journey-eventline'><span class='ev-icon'>{row.etype_icon}</span>"
+                f"      <span class='journey-event'>{event_label}</span>{ad_html}{ad_prod_inline}"
+                f"    </div>"
+                f"    <div class='journey-page'>{page_label}</div>"
+                f"    <div class='journey-meta'>{meta_html}</div>"
+                f"    {purchase_item_html}"
+                f"  </div>"
+                f"</div>"
+            )
+        tl.append("</div>")
+        st.markdown("".join(tl), unsafe_allow_html=True)
+
+        # Export displayed journey
+        export_cols = ["journey_name","event_sequence","event_timestamp","event_type",et_col,
+                       "page_location","source","ad_name","ad_product","product_title"]
+        export_cols = [c for c in export_cols if c in journey_df.columns]
+        export_df = journey_df[export_cols].copy()
+        st.download_button(
+            "Download journey (CSV)",
+            data=export_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"journey_{selected_journey.replace('#','').replace(' ','_')}.csv",
+            mime="text/csv",
+            key=f"download_journey_{selected_journey}",
+        )
+
+    # Close panel
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+
+    colA, colB = st.columns([1,4])
+    with colA:
+        if st.button("← Back to Home"):
+            go("home")
+    st.markdown("</div>", unsafe_allow_html=True)
+    
+    
+# # ──────────────────────────────────────────────────────────────────────────────
+# # Journeys · TripleWhale Paths
+# # - Right-side compact filters (Product title, Date presets from data, Rapid repeats, Source, Journey)
+# # - Left big scrollable timeline (Purchase on top, earlier steps below)
+# # - Product title mapped from sales_file.csv (Order name == journey_name), shown ONLY on Purchase
+# # - Non-purchase rows must have Ad Name (null Ad Name allowed only for Purchase)
+# # ──────────────────────────────────────────────────────────────────────────────
+# from pathlib import Path
+# from datetime import date, timedelta
+# import pandas as pd
+# import html
+# import streamlit as st
+
+# # Change path if needed
+# SALES_FILE = Path(__file__).with_name("sales_file.csv")
+
+
+# # ------------------------------- helpers -------------------------------------
+# def _first_valid_value(s: pd.Series):
+#     for v in s:
+#         if pd.notna(v) and str(v).strip():
+#             return v
+#     return pd.NA
+
+# def _format_timedelta(td) -> str:
+#     if pd.isna(td):
+#         return "--"
+#     secs = int(td.total_seconds())
+#     if secs < 60:
+#         return f"{secs}s"
+#     mins, s = divmod(secs, 60)
+#     if mins < 60:
+#         return f"{mins}m {s}s"
+#     hrs, m = divmod(mins, 60)
+#     if hrs < 24:
+#         return f"{hrs}h {m}m"
+#     days, h = divmod(hrs, 24)
+#     return f"{days}d {h}h"
+
+# def _shorten(value: object, limit: int = 48) -> str:
+#     if not isinstance(value, str):
+#         return ""
+#     t = value.strip()
+#     return t if len(t) <= limit else t[: max(1, limit - 3)] + "..."
+
+# def _nullish(x) -> bool:
+#     if x is None or (isinstance(x, float) and pd.isna(x)):
+#         return True
+#     s = str(x).strip().lower()
+#     return s in ("", "none", "null", "nan", "na", "n/a")
+
+# def _first_of_month(d: date) -> date:
+#     return date(d.year, d.month, 1)
+
+# def _prev_month_range(anchor: date):
+#     if anchor.month == 1:
+#         start = date(anchor.year - 1, 12, 1)
+#     else:
+#         start = date(anchor.year, anchor.month - 1, 1)
+#     end = _first_of_month(anchor) - timedelta(days=1)
+#     return start, end
+
+
+# # Map ONE clean product title per order (Order name == journey_name)
+# def load_sales_mapping(file_path: Path) -> pd.DataFrame:
+#     """
+#     Reads sales_file.csv with:
+#       - 'Order name' (journey name)
+#       - 'Product title'
+#     Returns: DataFrame ['journey_name', 'product_title'] (first non-blank title per order).
+#     """
+#     if not file_path.exists():
+#         return pd.DataFrame(columns=["journey_name", "product_title"])
+
+#     df = pd.read_csv(file_path, dtype=str)
+#     cols = {c.strip().lower(): c for c in df.columns}
+
+#     def pick(*names):
+#         for nm in names:
+#             key = nm.strip().lower()
+#             if key in cols:
+#                 return cols[key]
+#         return None
+
+#     c_order = pick("order name", "order_name", "journey name", "journey_name")
+#     c_prod  = pick("product title", "product", "title")
+
+#     if c_order is None or c_prod is None:
+#         return pd.DataFrame(columns=["journey_name", "product_title"])
+
+#     df["journey_name"]  = df[c_order].astype(str).str.strip()
+#     df["product_title"] = df[c_prod].astype(str).str.strip()
+
+#     # Drop blanks / null-like strings
+#     bad = df["product_title"].str.lower().isin(["", "nan", "none", "null", "na", "n/a"])
+#     df = df[~bad].copy()
+
+#     # Take FIRST valid title per order
+#     grouped = (
+#         df.groupby("journey_name", as_index=False)
+#           .agg(product_title=("product_title", "first"))
+#     )
+#     return grouped
+
+
+# # UI pieces (data-anchored date presets; repeat threshold)
+# def _data_presets_ui(min_date: date, max_date: date):
+#     """Returns start_date, end_date, label (both dates or None for All data). Anchored to max_date in DATA."""
+#     anchor = max_date
+#     this_month_start = _first_of_month(anchor)
+#     last_month_start, last_month_end = _prev_month_range(anchor)
+
+#     preset = st.selectbox(
+#         "Date range (by purchase date in data)",
+#         ["Last 7 days", "Last 30 days", "Today (data)", "Yesterday (data)", "This month (data)", "Last month (data)", "Custom range", "All data"],
+#         index=0,
+#         key="jr_date_preset",
+#     )
+#     if preset == "Today (data)":
+#         start_d, end_d = anchor, anchor
+#     elif preset == "Yesterday (data)":
+#         start_d = anchor - timedelta(days=1); end_d = start_d
+#     elif preset == "Last 7 days":
+#         start_d = anchor - timedelta(days=6); end_d = anchor
+#     elif preset == "Last 30 days":
+#         start_d = anchor - timedelta(days=29); end_d = anchor
+#     elif preset == "This month (data)":
+#         start_d = this_month_start; end_d = anchor
+#     elif preset == "Last month (data)":
+#         start_d, end_d = last_month_start, last_month_end
+#     elif preset == "Custom range":
+#         default_start = max(anchor - timedelta(days=6), min_date)
+#         default_end   = anchor
+#         dr = st.date_input(
+#             "Pick a date range (from data)",
+#             value=(default_start, default_end),
+#             min_value=min_date,
+#             max_value=max_date,
+#             key="jr_custom_range",
+#         )
+#         if isinstance(dr, tuple) and len(dr) == 2:
+#             start_d, end_d = dr[0], dr[1]
+#         else:
+#             start_d, end_d = default_start, default_end
+#     else:
+#         return None, None, "All data"
+
+#     # clamp to dataset span
+#     start_d = max(start_d, min_date)
+#     end_d   = min(end_d, max_date)
+#     return start_d, end_d, preset
+
+
+# def _repeat_threshold_ui():
+#     """Returns (hide_enabled: bool, threshold_seconds: int)"""
+#     hide_rr = st.checkbox("Hide rapid repeats", value=True, key="jr_hide_rr")
+#     choice = st.selectbox(
+#         "Repeat threshold",
+#         ["60 sec", "30 sec", "2 min", "5 min", "Custom (seconds)"],
+#         index=0,
+#         key="jr_rr_choice",
+#     )
+#     if choice == "30 sec":
+#         seconds = 30
+#     elif choice == "60 sec":
+#         seconds = 60
+#     elif choice == "2 min":
+#         seconds = 120
+#     elif choice == "5 min":
+#         seconds = 300
+#     else:
+#         seconds = int(st.number_input("Custom seconds", min_value=1, value=60, step=1, key="jr_rr_custom"))
+#     return hide_rr, seconds
+
+
+# # ---------------------------------- MAIN -------------------------------------
+# def show_journeys():
+#     st.markdown("<div class='qm-panel'>", unsafe_allow_html=True)
+#     st.markdown("<span class='qm-eyebrow'>Section 3</span>", unsafe_allow_html=True)
+#     st.markdown("<h2 class='title-h2'>Journeys &#183; TripleWhale Paths</h2>", unsafe_allow_html=True)
+
+#     data_path = JOURNEYS_FILE
+#     if not data_path.exists():
+#         st.error(f"Could not find '{data_path.name}'. Place the TripleWhale export alongside app.py.")
+#         st.markdown("</div>", unsafe_allow_html=True); return
+
+#     try:
+#         journeys_df = load_journey_data(str(data_path))
+#     except Exception as exc:
+#         st.error(f"Could not load journeys: {exc}")
+#         st.markdown("</div>", unsafe_allow_html=True); return
+
+#     if journeys_df.empty:
+#         st.info("No journeys remain after loading.")
+#         st.markdown("</div>", unsafe_allow_html=True); return
+
+#     # Ensure datetime
+#     if not pd.api.types.is_datetime64_any_dtype(journeys_df["event_time"]):
+#         journeys_df["event_time"] = pd.to_datetime(journeys_df["event_time"], errors="coerce")
+
+#     # Canonical event type
+#     et_col = "event_type_norm" if "event_type_norm" in journeys_df.columns else "event_type"
+#     journeys_df[et_col] = journeys_df[et_col].fillna("").astype(str)
+
+#     # Purchase times on full data (for anchors/presets)
+#     is_purchase_full = journeys_df[et_col].str.lower().eq("purchase")
+#     purchase_times_full = (
+#         journeys_df.loc[is_purchase_full].groupby("journey_name")["event_time"].min().rename("first_purchase_time")
+#     )
+#     if purchase_times_full.empty:
+#         st.info("No purchase-anchored journeys found.")
+#         st.markdown("</div>", unsafe_allow_html=True); return
+
+#     min_d = purchase_times_full.min().date()
+#     max_d = purchase_times_full.max().date()
+
+#     # Layout: left (timeline) | right (filter card)
+#     left, right = st.columns([2.4, 1.0], gap="large")
+
+#     # ---------- RIGHT: filter card (top area) ----------
+#     with right:
+#         st.markdown("""
+#             <style>
+#               .filter-card { padding:14px; border:1px solid #e8ecf2; border-radius:14px; background:#fbfcff;
+#                              box-shadow:0 1px 2px rgba(0,0,0,.04); }
+#               .filter-card h4 { margin:0 0 8px 0; font-size:1rem; }
+#               .tiny-note { color:#6b7b8f; font-size:.82rem; margin-top:4px; }
+#             </style>
+#         """, unsafe_allow_html=True)
+
+#         st.markdown("<div class='filter-card'>", unsafe_allow_html=True)
+#         st.markdown("#### Filters", unsafe_allow_html=True)
+
+#         # Date presets (data-anchored)
+#         st.markdown("**Date range**")
+#         start_date, end_date, preset = _data_presets_ui(min_d, max_d)
+
+#         # Rapid repeats
+#         st.markdown("**Rapid repeats**")
+#         hide_rr, rr_seconds = _repeat_threshold_ui()
+#         st.markdown("<div class='tiny-note'>Removes steps closer than the threshold to the previous step (keeps earlier; Purchase always kept).</div>", unsafe_allow_html=True)
+
+#     # Apply DATE FILTER to journeys by first purchase time
+#     if start_date and end_date:
+#         start_ts = pd.Timestamp(start_date)
+#         end_ts   = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+#         keep_journeys = purchase_times_full[(purchase_times_full >= start_ts) & (purchase_times_full <= end_ts)]
+#     else:
+#         keep_journeys = purchase_times_full
+
+#     if keep_journeys.empty:
+#         with left:
+#             st.info(f"No journeys with a purchase in the selected range ({preset}).")
+#         st.markdown("</div>", unsafe_allow_html=True); return
+
+#     # Keep journeys in range & trim to first purchase
+#     journeys_df = journeys_df.merge(keep_journeys.rename("first_purchase_time"), on="journey_name", how="inner")
+#     journeys_df = journeys_df[journeys_df["event_time"] <= journeys_df["first_purchase_time"]].copy()
+
+#     # Non-purchase rows must have Ad Name
+#     ad_ok = ~journeys_df["ad_name"].map(_nullish) if "ad_name" in journeys_df.columns else pd.Series(False, index=journeys_df.index)
+#     is_purchase_now = journeys_df[et_col].str.lower().eq("purchase")
+#     journeys_df = journeys_df[is_purchase_now | ad_ok].copy()
+
+#     # Ensure at least one non-purchase row per journey
+#     non_purchase_counts = journeys_df.loc[~is_purchase_now].groupby("journey_name").size().rename("np_rows")
+#     journeys_df = journeys_df.merge(non_purchase_counts, on="journey_name", how="left")
+#     journeys_df = journeys_df[journeys_df["np_rows"].fillna(0) > 0].copy()
+#     if journeys_df.empty:
+#         with left:
+#             st.info("No journeys remain after applying ad-name rule and date range.")
+#         st.markdown("</div>", unsafe_allow_html=True); return
+
+#     # Attach single product title (ONLY shows on purchase row)
+#     sales_map = load_sales_mapping(SALES_FILE)
+#     if not sales_map.empty:
+#         journeys_df = journeys_df.merge(sales_map, on="journey_name", how="left")
+#     else:
+#         journeys_df["product_title"] = ""
+
+#     journeys_df = journeys_df.sort_values(["journey_name", "event_time", "event_sequence"]).reset_index(drop=True)
+
+#     # ---------- SUMMARY for right-hand picker & left header ----------
+#     summary_df = (
+#         journeys_df.groupby("journey_name")
+#         .agg(
+#             steps=("event_sequence", "count"),
+#             first_event=("event_time", "min"),
+#             last_event=("event_time", "max"),
+#             purchase_time=("first_purchase_time", "first"),
+#         )
+#         .reset_index()
+#     )
+#     ad_np = (
+#         journeys_df.loc[journeys_df[et_col].str.lower().ne("purchase")]
+#         .groupby("journey_name")["ad_name"].agg(_first_valid_value).rename("ad_name_np")
+#     )
+#     summary_df = summary_df.merge(ad_np, on="journey_name", how="left")
+#     if "source" in journeys_df.columns:
+#         summary_df = summary_df.merge(
+#             journeys_df.groupby("journey_name")["source"].agg(_first_valid_value).rename("source"),
+#             on="journey_name", how="left",
+#         )
+#     if "page_location" in journeys_df.columns:
+#         summary_df = summary_df.merge(
+#             journeys_df.groupby("journey_name")["page_location"].agg(_first_valid_value).rename("first_page"),
+#             on="journey_name", how="left",
+#         )
+#     summary_df["journey_span"] = summary_df["last_event"] - summary_df["first_event"]
+#     summary_df = summary_df.sort_values(["purchase_time", "first_event"], ascending=[False, False]).reset_index(drop=True)
+
+#     st.caption(
+#         f"{len(summary_df)} journeys (purchase in {preset}). "
+#         "Non-purchase steps require Ad Name; Purchase may not. Products show only on Purchase."
+#     )
+
+#     # Product options (from purchase rows after date/ad filters)
+#     purchase_titles = (
+#         journeys_df.loc[journeys_df[et_col].str.lower().eq("purchase"), "product_title"]
+#         .dropna().astype(str).str.strip()
+#     )
+#     product_options = sorted({t for t in purchase_titles if t})
+
+#     # ---------- RIGHT: refine (Product title at top, then Source, then Journey) ----------
+#     with right:
+#         st.markdown("**Refine**")
+
+#         if product_options:
+#             product_filter = st.multiselect("Product title (Item)", product_options, key="jr_product_filter")
+#         else:
+#             product_filter = []
+#             st.caption("No product titles found in the selected date range.")
+
+#         source_filter = None
+#         if "source" in summary_df.columns:
+#             source_options = sorted({str(s).strip() for s in summary_df["source"].dropna() if str(s).strip()})
+#             source_filter = st.multiselect("Source", source_options, key="journeys_filter_source")
+
+#     # Apply product filter + source filter to the journey list
+#     filtered_df = summary_df.copy()
+
+#     if product_filter:
+#         # Journey -> product title (from purchase only)
+#         journey_products = journeys_df.loc[
+#             journeys_df[et_col].str.lower().eq("purchase"),
+#             ["journey_name", "product_title"]
+#         ].dropna()
+#         journey_products["product_title"] = journey_products["product_title"].astype(str).str.strip()
+#         allowed = set(journey_products[journey_products["product_title"].isin(product_filter)]["journey_name"].unique())
+#         filtered_df = filtered_df[filtered_df["journey_name"].isin(allowed)]
+
+#     if source_filter:
+#         filtered_df = filtered_df[filtered_df["source"].isin(source_filter)]
+
+#     if filtered_df.empty:
+#         with left:
+#             msg = "No journeys match the current filters."
+#             if product_filter:
+#                 msg += " Try clearing the product title filter."
+#             st.info(msg)
+#             with st.expander("All journeys (summary)"):
+#                 _view = summary_df[["journey_name", "source", "ad_name_np", "steps", "journey_span"]].copy()
+#                 _view["journey_span"] = _view["journey_span"].apply(_format_timedelta)
+#                 _view = _view.rename(columns={
+#                     "journey_name": "Journey", "source": "Source", "ad_name_np": "Ad Name",
+#                     "steps": "Steps", "journey_span": "Journey Span",
+#                 })
+#                 st.dataframe(_view, use_container_width=True, hide_index=True)
+#         st.markdown("</div>", unsafe_allow_html=True);  # close filter-card
+#         st.markdown("</div>", unsafe_allow_html=True);  # close panel
+#         return
+
+#     # Journey picker (post-filters)
+#     label_map: dict[str, str] = {}
+#     for row in filtered_df.itertuples():
+#         pieces = [row.journey_name]
+#         if "source" in filtered_df.columns and isinstance(row.source, str) and row.source.strip():
+#             pieces.append(_shorten(row.source, 36))
+#         ad_label = _shorten(row.ad_name_np, 48) if isinstance(row.ad_name_np, str) else ""
+#         if ad_label:
+#             pieces.append(ad_label)
+#         pieces.append(f'{int(row.steps)} steps')
+#         label_map[row.journey_name] = " | ".join([p for p in pieces if p])
+
+#     options = filtered_df["journey_name"].tolist()
+#     previous_choice = st.session_state.get("journeys_selected")
+#     default_index = options.index(previous_choice) if previous_choice in options else 0
+
+#     with right:
+#         selected_journey = st.selectbox(
+#             "Journey",
+#             options,
+#             index=default_index,
+#             format_func=lambda j: label_map.get(j, j),
+#             key="journeys_selected",
+#         )
+#         st.markdown("</div>", unsafe_allow_html=True)  # close filter-card
+
+#     # ---------- LEFT: header + legend + timeline ----------
+#     with left:
+#         st.markdown("""
+#             <style>
+#             .journey-hero { display:flex; align-items:center; gap:14px; margin:6px 0 10px 0; }
+#             .ad-hero { font-weight:800; font-size:1.06rem; padding:8px 12px; border-radius:16px;
+#                        border:1px solid rgba(0,0,0,0.06); background:linear-gradient(180deg,#fff, #fafafa);
+#                        box-shadow:0 1px 2px rgba(0,0,0,0.06); }
+#             .hero-pills { display:flex; gap:8px; flex-wrap:wrap; }
+#             .hero-pill { font-size:.86rem; padding:5px 12px; border-radius:999px; background:#f5f7fa; border:1px solid #edf0f3; }
+#             .journey-shell { margin-top:6px; }
+#             .journey-scroll { max-height:640px; overflow-y:auto; padding:10px 10px; background:#fff;
+#                               border:1px solid #e8ecf2; border-radius:14px; box-shadow:inset 0 1px 3px rgba(0,0,0,.05); }
+#             .journey-step { display:grid; grid-template-columns: 52px 1fr; gap:12px; padding:10px; margin:8px 0;
+#                             background:#ffffff; border:1px solid #eef1f6; border-radius:12px; box-shadow:0 1px 2px rgba(0,0,0,0.04); }
+#             .journey-seq { display:flex; align-items:center; justify-content:center; width:44px; height:44px; border-radius:12px;
+#                            background:#f7f9fc; font-weight:700; font-size:.95rem; border:1px solid #eef1f6; }
+#             .ev-icon { margin-right:8px; }
+#             .journey-eventline { display:flex; align-items:center; gap:8px; }
+#             .journey-event { font-weight:800; }
+#             .ad-badge { margin-left:auto; font-weight:800; padding:4px 10px; border-radius:10px; background:#fff5e6; border:1px solid #ffe2b8; }
+#             .journey-page { color:#52637a; font-size:.94rem; margin:2px 0 2px 26px; }
+#             .journey-meta { color:#66798f; font-size:.86rem; display:flex; gap:12px; margin-left:26px; }
+#             .journey-empty { opacity:.55; }
+#             .prod-box { margin:6px 0 0 26px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+#             .prod-chip { font-size:.86rem; padding:4px 10px; border:1px solid #e7eaf0; background:#fbfcfe; border-radius:999px; }
+#             .ev-view .journey-seq { background:#f2f7ff; }
+#             .ev-click .journey-seq { background:#f6f3ff; }
+#             .ev-cart .journey-seq { background:#fff6f0; }
+#             .ev-checkout .journey-seq { background:#f1fff4; }
+#             .ev-purchase { border:1px solid #d2f5e5; background:#f7fffb; }
+#             .ev-purchase .journey-seq { background:#f0fff8; border:1px solid #d2f5e5; }
+#             .legend { display:flex; gap:12px; color:#567; font-size:.85rem; margin:6px 0 12px 0; }
+#             .legend span { background:#f6f8fb; border:1px solid #eef1f6; padding:6px 10px; border-radius:999px; }
+#             </style>
+#         """, unsafe_allow_html=True)
+
+#         # Header chips
+#         summary_row = summary_df[summary_df["journey_name"] == selected_journey].iloc[0]
+#         ad_hero = html.escape(_shorten(summary_row.ad_name_np, 80) or "--")
+#         steps_label = f'{int(summary_row.steps)} steps'
+#         span_label = _format_timedelta(summary_row["last_event"] - summary_row["first_event"])
+
+#         st.markdown(
+#             f"<div class='journey-hero'>"
+#             f"<div class='ad-hero'>Ad • <span>{ad_hero}</span></div>"
+#             f"<div class='hero-pills'>"
+#             f"<div class='hero-pill'>Journey Span: {html.escape(span_label)}</div>"
+#             f"<div class='hero-pill'>{html.escape(steps_label)}</div>"
+#             f"</div>"
+#             f"</div>",
+#             unsafe_allow_html=True,
+#         )
+#         st.markdown("<div class='legend'><span>👀 View</span><span>🖱️ Click</span><span>🛒 Add to Cart</span><span>💳 Checkout</span><span>🛍️ Purchase</span></div>", unsafe_allow_html=True)
+
+#         # Build timeline for selected journey (chronological → optional repeats → display with Purchase on top)
+#         base_df = journeys_df[journeys_df["journey_name"] == selected_journey].copy().reset_index(drop=True)
+#         jp_mask = base_df[et_col].str.lower().eq("purchase")
+#         fp_idx = base_df.index[jp_mask][0]
+#         base_df = base_df.loc[:fp_idx].copy()  # chronological up to first purchase
+
+#         if hide_rr and rr_seconds > 0:
+#             base_df["delta_prev_chrono"] = base_df["event_time"].diff()
+#             keep_bursts = (
+#                 (base_df.index == 0)
+#                 | (base_df[et_col].str.lower().eq("purchase"))
+#                 | (base_df["delta_prev_chrono"].isna())
+#                 | (base_df["delta_prev_chrono"] >= pd.Timedelta(seconds=int(rr_seconds)))
+#             )
+#             base_df = base_df[keep_bursts].copy().reset_index(drop=True)
+
+#         jp_mask2 = base_df[et_col].str.lower().eq("purchase")
+#         fp_idx2 = base_df.index[jp_mask2][0]
+#         prior = base_df.iloc[:fp_idx2] if fp_idx2 > 0 else base_df.iloc[0:0]
+#         journey_df = pd.concat([base_df.iloc[[fp_idx2]], prior.iloc[::-1]], ignore_index=True)
+
+#         # Display fields
+#         def _disp(s):
+#             return s.strip() if isinstance(s, str) and s.strip() else "--"
+
+#         journey_df["event_display"] = journey_df["event_type"] if "event_type" in journey_df else journey_df[et_col]
+#         journey_df["event_display"] = journey_df["event_display"].apply(_disp)
+#         journey_df["page_display"] = journey_df.get("page_location", pd.Series([""] * len(journey_df))).apply(_disp)
+
+#         if pd.api.types.is_datetime64_any_dtype(journey_df["event_time"]):
+#             journey_df["event_time_display"] = journey_df["event_time"].dt.strftime("%b %d, %Y - %I:%M:%S %p")
+#         else:
+#             journey_df["event_time_display"] = journey_df.get("event_timestamp", pd.Series(["--"] * len(journey_df))).apply(_disp)
+
+#         journey_df["delta_prev"] = journey_df["event_time"] - journey_df["event_time"].shift(1)
+#         journey_df.loc[0, "delta_prev"] = pd.Timedelta(0)
+#         journey_df["delta_prev_label"] = journey_df["delta_prev"].abs().apply(_format_timedelta)
+
+#         journey_df["source_display"] = journey_df.get("source", pd.Series([""] * len(journey_df))).apply(lambda x: _shorten(x, 32))
+#         journey_df["ad_display"] = journey_df["ad_name"].apply(lambda x: _shorten(x, 48) if isinstance(x, str) and x.strip() else "")
+
+#         def _etype_class_and_icon(s: str):
+#             s = (s or "").lower()
+#             if "purchase" in s: return "ev-purchase", "🛍️"
+#             if "add_to_cart" in s or "addtocart" in s or "cart" in s: return "ev-cart", "🛒"
+#             if "checkout" in s or "begin_checkout" in s: return "ev-checkout", "💳"
+#             if "click" in s or "ad_click" in s: return "ev-click", "🖱️"
+#             if "search" in s: return "ev-search", "🔎"
+#             if "view" in s or "page_view" in s or "view_content" in s or "view_item" in s: return "ev-view", "👀"
+#             return "ev-other", "•"
+
+#         journey_df["etype_class"], journey_df["etype_icon"] = zip(*journey_df[et_col].apply(_etype_class_and_icon))
+
+#         # Render timeline
+#         tl = ["<div class='journey-shell'><div class='journey-scroll'>"]
+#         for row in journey_df.itertuples(index=False):
+#             seq_label  = html.escape(str(row.event_sequence)) if pd.notna(row.event_sequence) else "--"
+#             event_label = html.escape(row.event_display) if isinstance(row.event_display, str) else "--"
+#             page_label = html.escape(row.page_display) if isinstance(row.page_display, str) else "--"
+
+#             meta_bits = []
+#             if row.event_time_display and row.event_time_display != "--":
+#                 meta_bits.append(f"<span><strong>{html.escape(row.event_time_display)}</strong></span>")
+#             if row.delta_prev_label not in ("--", "0s"):
+#                 meta_bits.append(f"<span>+{html.escape(row.delta_prev_label)} since prior</span>")
+#             if isinstance(row.source_display, str) and row.source_display.strip():
+#                 meta_bits.append(f"<span>{html.escape(row.source_display)}</span>")
+#             meta_html = "".join(meta_bits) if meta_bits else "<span class='journey-empty'>No metadata</span>"
+
+#             show_ad_badge = (("purchase" not in (row.event_display or "").lower()) and isinstance(row.ad_display, str) and row.ad_display.strip())
+#             ad_html = f"<span class='ad-badge'><strong>{html.escape(row.ad_display)}</strong></span>" if show_ad_badge else ""
+
+#             # ONE product title ONLY on purchase step
+#             prod_html = ""
+#             if "purchase" in (row.event_display or "").lower():
+#                 title = getattr(row, "product_title", "")
+#                 title = title.strip() if isinstance(title, str) else ""
+#                 if title:
+#                     prod_html = f"<div class='prod-box'>🧾 Item: <span class='prod-chip'>{html.escape(title)}</span></div>"
+
+#             tl.append(
+#                 f"<div class='journey-step {row.etype_class}'>"
+#                 f"  <div class='journey-seq'>{seq_label}</div>"
+#                 f"  <div>"
+#                 f"    <div class='journey-eventline'><span class='ev-icon'>{row.etype_icon}</span>"
+#                 f"      <span class='journey-event'>{event_label}</span>{ad_html}"
+#                 f"    </div>"
+#                 f"    <div class='journey-page'>{page_label}</div>"
+#                 f"    <div class='journey-meta'>{meta_html}</div>"
+#                 f"    {prod_html}"
+#                 f"  </div>"
+#                 f"</div>"
+#             )
+#         tl.append("</div></div>")
+#         st.markdown("".join(tl), unsafe_allow_html=True)
+
+#         # Export displayed journey
+#         export_cols = [
+#             "journey_name", "event_sequence", "event_timestamp", "event_type", et_col,
+#             "page_location", "source", "ad_name", "product_title"
+#         ]
+#         export_cols = [c for c in export_cols if c in journey_df.columns]
+#         export_df = journey_df[export_cols].copy()
+#         st.download_button(
+#             "Download journey (CSV)",
+#             data=export_df.to_csv(index=False).encode("utf-8"),
+#             file_name=f"journey_{selected_journey.replace('#', '').replace(' ', '_')}.csv",
+#             mime="text/csv",
+#             key=f"download_journey_{selected_journey}",
+#         )
+
+#         # Summary of filtered journeys
+#         matches_df = filtered_df[["journey_name", "ad_name_np", "steps", "journey_span", "source"]].copy()
+#         matches_df["journey_span"] = matches_df["journey_span"].apply(_format_timedelta)
+#         matches_df = matches_df.rename(columns={
+#             "journey_name": "Journey", "ad_name_np": "Ad Name", "steps": "Steps",
+#             "journey_span": "Journey Span", "source": "Source",
+#         })
+#         with st.expander("Filtered journeys (summary)"):
+#             st.dataframe(matches_df, use_container_width=True, hide_index=True)
+
+#     # close outer panel
+#     st.markdown("</div>", unsafe_allow_html=True)
+
 
 # # ──────────────────────────────────────────────────────────────────────────────
 # # SECTION 3 — OPTIMIZER (placeholder UI shell)
@@ -1896,43 +3189,58 @@ def show_insights():
 # # ──────────────────────────────────────────────────────────────────────────────
 
 def home_cards():
-    st.markdown("<div class='qm-hero'>QuantMatrix — Model & Optimizer Suite</div>", unsafe_allow_html=True)
-    st.markdown("<div class='qm-sub'>Section 1: Model Consolidator • Section 2: Insights • Section 3: Optimizer Configurer • Section 4: Marketing Inputs</div>", unsafe_allow_html=True)
+    st.markdown("<div class='qm-hero'>QuantMatrix - Model & Optimizer Suite</div>", unsafe_allow_html=True)
+    st.markdown("<div class='qm-sub'>Section 1: Model Consolidator &bull; Section 2: Insights &bull; Section 3: Journeys &bull; Section 4: Optimizer Configurer &bull; Section 5: Marketing Inputs</div>", unsafe_allow_html=True)
     st.write("")
 
-    c1, c2, c3, c4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
 
-    with c1:
+    with col1:
         st.markdown(
             """
             <div class='qm-card qm-accent-yellow'>
               <div class='qm-eyebrow'>Section 1</div>
               <div class='qm-title'>Model Consolidator</div>
-              <div class='qm-copy'>Upload your model results and collapse to a single model per combination via a winner model or a MAPE‑weighted ensemble.</div>
+              <div class='qm-copy'>Upload your model results and collapse to a single model per combination via a winner model or a MAPE-weighted ensemble.</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
         st.button("Open Consolidator", key="btn_cons", on_click=lambda: go("consolidator"))
 
-    with c2:
+    with col2:
         st.markdown(
             """
             <div class='qm-card qm-accent-green'>
               <div class='qm-eyebrow'>Section 2</div>
               <div class='qm-title'>Insights</div>
-              <div class='qm-copy'>View contribution shares and charts across variables per combination.</div>
+              <div class='qm-copy'>View contribution shares, impressions, and portfolio analytics across combinations.</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
         st.button("Open Insights", key="btn_insights", on_click=lambda: go("insights"))
 
-    with c3:
+    with col3:
+        st.markdown(
+            """
+            <div class='qm-card qm-accent-blue'>
+              <div class='qm-eyebrow'>Section 3</div>
+              <div class='qm-title'>Journeys</div>
+              <div class='qm-copy'>Explore TripleWhale journeys, filter by source, and inspect event sequences up to purchase.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.button("Open Journeys", key="btn_journeys", on_click=lambda: go("journeys"))
+
+    col4, col5 = st.columns(2)
+
+    with col4:
         st.markdown(
             """
             <div class='qm-card qm-accent-green'>
-              <div class='qm-eyebrow'>Section 3</div>
+              <div class='qm-eyebrow'>Section 4</div>
               <div class='qm-title'>Optimizer Configurer</div>
               <div class='qm-copy'>Set objective, constraints, guardrails, and scenario metadata before running the optimization.</div>
             </div>
@@ -1941,11 +3249,11 @@ def home_cards():
         )
         st.button("Configure Optimizer", key="btn_cfg", on_click=lambda: go("optimizer_config"))
 
-    with c4:
+    with col5:
         st.markdown(
             """
             <div class='qm-card qm-accent-blue'>
-              <div class='qm-eyebrow'>Section 4</div>
+              <div class='qm-eyebrow'>Section 5</div>
               <div class='qm-title'>Marketing Inputs</div>
               <div class='qm-copy'>Run the solver with your chosen decision variables and iterations. Hook this to your backend.</div>
             </div>
@@ -2067,6 +3375,8 @@ elif st.session_state.section == "consolidator":
     show_consolidator()
 elif st.session_state.section == "insights":
     show_insights()
+elif st.session_state.section == "journeys":
+    show_journeys()
 # elif st.session_state.section == "optimizer_config":
 #     show_optimizer_config()
 # elif st.session_state.section == "optimizer":
